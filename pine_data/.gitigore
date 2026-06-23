@@ -1,0 +1,41 @@
+# NOTE: This file name is misspelled. Git uses .gitignore.
+# Keep this file mirrored for now because it was already present.
+
+# Large data and generated outputs
+recordings/
+robot_trajectory.txt
+*.h5
+*.hdf5
+*.bag
+*.mp4
+*.avi
+*.mov
+*.7z
+*.zip
+
+# Python environments
+.venv/
+venv/
+env/
+data_record_env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local assistant/editor metadata
+.agents/
+.claude/
+.codex
+
+# Runtime and logs
+*.log
+.runtime/
+webapp/.runtime/
+webapp_/.runtime/
+coscli_output/
+
+# Generated exports
+exported_images/
+.claude/

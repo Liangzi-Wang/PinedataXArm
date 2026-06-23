@@ -1,0 +1,21 @@
+# Minimal dependencies for the NPY recordings browser + web-controlled recorder.
+# Example:
+#   python -m venv .venv
+#   . .venv/bin/activate
+#   pip install -r webapp/requirements.txt
+
+fastapi==0.135.3
+uvicorn[standard]==0.43.0
+pydantic==2.11.3
+
+numpy==2.2.6
+Pillow>=10
+
+# Live recorder hardware dependencies.
+opencv-python-headless>=4.8
+pyrealsense2>=2.55
+ur-rtde>=1.6
+
+# Optional: only needed for running record_multi_camera_npy_web.py directly
+# with terminal keyboard controls instead of the web buttons.
+# pynput>=1.7

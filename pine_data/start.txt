@@ -1,0 +1,15 @@
+source /home/pine/pine_data/data_record_env/bin/activate
+
+# CLI recorder
+python /home/pine/pine_data/data_recording/record_multi_camera_npy.py \
+  --root /home/pine/pine_data/recordings
+
+# Webapp
+cd /home/pine/pine_data/webapp
+./run_recording_webapp.sh
+
+# Checks
+python /home/pine/pine_data/check_timestamp_recordings.py \
+  --root /home/pine/pine_data/recordings
+python /home/pine/pine_data/check_episode_counts.py \
+  --root /home/pine/pine_data/recordings

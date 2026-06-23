@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Data Foundry @ NTU Pine Lab</title>
+  <link rel="stylesheet" href="/static/app.css?v=20260415a">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div class="hero-main">
+        <div class="hero-title-block">
+          <h1 class="hero-title">
+            <img
+              class="hero-title-logo"
+              src="/logo/pinelab_logo.png"
+              alt="Pine Lab logo"
+            >
+            <span>Data Foundry</span>
+            <span class="hero-title-accent">@ NTU Pine Lab</span>
+          </h1>
+        </div>
+        <img
+          class="hero-logo"
+          src="/logo/Nanyang_Technological_University-Logo.wine.svg"
+          alt="Nanyang Technological University logo"
+        >
+      </div>
+    </header>
+
+    <main class="workspace-grid">
+      <div class="workspace-pane left-browser-pane">
+        <div class="pane-banner pane-banner-split">
+          <div>
+            <p class="panel-kicker">Replay Workspace</p>
+            <h2>Recorded Episodes And Analysis</h2>
+          </div>
+          <div class="help-popover">
+            <button class="help-button" type="button" aria-label="Replay workspace help">?</button>
+            <div class="help-card">
+              <h3>Replay Workspace</h3>
+              <ul>
+                <li>Choose the recording root from `Recording root`.</li>
+                <li>Click an episode in `Episode list` to load its metadata and streams.</li>
+                <li>Use `Prev`, `Play`, `Next`, or drag the slider to inspect the trajectory.</li>
+                <li>Switch `Camera view` to compare saved RGB or depth streams.</li>
+                <li>Read `Episode metadata` and `Signals and arrays` to verify what was recorded.</li>
+                <li>Leave `Auto-refresh` on if you want newly saved episodes to appear automatically.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <section class="panel episode-list-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Recordings</p>
+              <h2>Episode list</h2>
+            </div>
+            <div class="toolbar">
+              <button id="refreshDatasetsBtn" class="button button-secondary">Refresh</button>
+              <button id="deleteSelectedEpisodeBtn" class="button button-danger-soft">Delete selected episode</button>
+              <label class="toggle">
+                <input id="autoRefreshCheckbox" type="checkbox" checked>
+                <span>Auto-refresh</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="selector-row">
+            <label for="datasetSelect">Recording root</label>
+            <select id="datasetSelect"></select>
+          </div>
+
+          <div class="watch-line episode-path-line">
+            <span class="watch-label">Path</span>
+            <span id="configDataDir" class="watch-path">...</span>
+          </div>
+
+          <div id="datasetEmpty" class="empty-state hidden">
+            No recording episodes found in the watched directory yet.
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Episode</th>
+                  <th>Steps</th>
+                  <th>Duration</th>
+                  <th>FPS</th>
+                  <th>Size</th>
+                  <th>Streams</th>
+                  <th>Start</th>
+                </tr>
+              </thead>
+              <tbody id="episodesTableBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel panel-detail replay-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Episode Detail</p>
+              <h2 id="episodeTitle">Choose an episode</h2>
+            </div>
+            <div id="episodeMetaBadge" class="meta-badge">No episode selected</div>
+          </div>
+
+          <div class="player-controls">
+            <div class="selector-row">
+              <label for="streamSelect">Camera view</label>
+              <select id="streamSelect"></select>
+            </div>
+            <div class="button-row">
+              <button id="prevFrameBtn" class="button button-secondary">Prev</button>
+              <button id="playPauseBtn" class="button">Play</button>
+              <button id="nextFrameBtn" class="button button-secondary">Next</button>
+            </div>
+          </div>
+
+          <div class="frame-wrap">
+            <img id="frameImage" alt="Episode frame preview">
+          </div>
+
+          <div class="scrubber">
+            <input id="frameSlider" type="range" min="0" max="0" value="0">
+            <div class="scrubber-meta">
+              <span id="frameCounter">step 0 / 0</span>
+              <span id="frameTimestamp">timestamp unavailable</span>
+            </div>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">Duration</div>
+              <div id="durationValue" class="stat-value">-</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Estimated FPS</div>
+              <div id="fpsValue" class="stat-value">-</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Start time</div>
+              <div id="startTimeValue" class="stat-value">-</div>
+            </div>
+          </div>
+
+          <div class="detail-subgrid">
+            <div>
+              <div class="panel-head detail-subhead">
+                <div>
+                  <p class="panel-kicker">Episode Inventory</p>
+                  <h3>Signals and arrays</h3>
+                </div>
+              </div>
+              <div class="table-wrap inventory-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Path</th>
+                      <th>Shape</th>
+                      <th>Dtype</th>
+                      <th>Size</th>
+                    </tr>
+                  </thead>
+                  <tbody id="inventoryTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div>
+              <div class="panel-head detail-subhead">
+                <div>
+                  <p class="panel-kicker">Info</p>
+                  <h3>Episode info</h3>
+                </div>
+              </div>
+              <div id="episodeInfoField" class="meta-box info-field">Select an episode to inspect details.</div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <aside class="workspace-pane live-pane">
+        <div class="pane-banner pane-banner-split">
+          <div>
+            <p class="panel-kicker">Live Workspace</p>
+            <h2>Recorder Control And Monitoring</h2>
+          </div>
+          <div class="help-popover">
+            <button class="help-button" type="button" aria-label="Live workspace help">?</button>
+            <div class="help-card">
+              <h3>Live Workspace</h3>
+              <ul>
+                <li>Check the source badges first to see whether each input is `Disconnected`, `Connected`, or `Streaming`.</li>
+                <li>Watch the two RGB preview windows to confirm the cameras are live.</li>
+                <li>Press `Initialize` to start or reconnect the SpaceMouse teleop + recorder pipeline. Keyboard: `i`.</li>
+                <li>Press `Reset` to move the arm to the configured home position. Keyboard: `Ctrl+r`.</li>
+                <li>Teleoperate the arm only after the robot and cameras look healthy in the status area.</li>
+                <li>Press `Start episode` to begin a new recording using the current instruction text. Keyboard: `c`.</li>
+                <li>Press `Label subtask` whenever you want to mark a subtask boundary inside the current episode. Keyboard: `l`.</li>
+                <li>Press `Stop and save` to finish the episode and write data to disk. Keyboard: `s`.</li>
+                <li>Use `Delete last` only when you want to remove the most recently saved episode. Keyboard: `d`.</li>
+                <li>Use `Shutdown` to close the tmux backend session and stop the recorder cleanly. Keyboard: `q`.</li>
+                <li>Read the status box at the bottom for tmux logs, save path, and runtime errors.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <section class="panel live-recording-panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Live Recording</p>
+              <h2>Current inputs and controls</h2>
+            </div>
+            <div id="recorderStatusBadge" class="meta-badge">Not initialized</div>
+          </div>
+
+          <div class="button-row command-row">
+            <button id="initializeSpacemouseBtn" class="button" title="Keyboard shortcut: I" aria-keyshortcuts="I">Initialize (<strong>I</strong>)</button>
+            <button id="resetRecorderBtn" class="button button-secondary" title="Keyboard shortcut: Ctrl+R" aria-keyshortcuts="Control+R">Reset (<strong>Ctrl+R</strong>)</button>
+            <button id="startRecordingBtn" class="button button-secondary" title="Keyboard shortcut: C" aria-keyshortcuts="C">Start episode (<strong>C</strong>)</button>
+            <button id="labelSubtaskBtn" class="button button-secondary" title="Keyboard shortcut: L" aria-keyshortcuts="L">Label subtask (<strong>L</strong>)</button>
+            <button id="stopRecordingBtn" class="button button-secondary" title="Keyboard shortcut: S" aria-keyshortcuts="S">Stop and save (<strong>S</strong>)</button>
+            <button id="deleteEpisodeBtn" class="button button-danger-soft" title="Keyboard shortcut: D" aria-keyshortcuts="D">Delete last (<strong>D</strong>)</button>
+            <button id="shutdownRecorderBtn" class="button button-danger" title="Keyboard shortcut: Q" aria-keyshortcuts="Q">Shutdown (<strong>Q</strong>)</button>
+          </div>
+
+          <div class="stats-grid recorder-counts">
+            <div class="stat-card">
+              <div class="stat-label">Hand frames</div>
+              <div id="handFrameCount" class="stat-value">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">External frames</div>
+              <div id="externalFrameCount" class="stat-value">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Robot frames</div>
+              <div id="robotFrameCount" class="stat-value">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Subtask labels</div>
+              <div id="subtaskLabelCount" class="stat-value">0</div>
+            </div>
+          </div>
+
+          <div class="control-monitor-grid">
+            <div id="recorderMessage" class="empty-state">Initialize the recorder to view live camera and proprio inputs.</div>
+            <div class="signal-card spacemouse-card">
+              <div class="signal-title">SpaceMouse input</div>
+              <pre id="spacemouseLivePreview" class="signal-value">SpaceMouse pipeline is not active.</pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Inputs</p>
+              <h2>Live camera previews and source status</h2>
+            </div>
+          </div>
+          <div class="source-status-grid">
+            <div class="source-chip">Hand camera <span id="handSourceBadge" class="source-badge" data-state="disconnected">Disconnected</span></div>
+            <div class="source-chip">External camera <span id="externalSourceBadge" class="source-badge" data-state="disconnected">Disconnected</span></div>
+            <div class="source-chip">Robot <span id="robotSourceBadge" class="source-badge" data-state="disconnected">Disconnected</span></div>
+            <div class="source-chip">Gripper <span id="gripperSourceBadge" class="source-badge" data-state="disconnected">Disconnected</span></div>
+          </div>
+          <div class="live-rgb-grid">
+            <figure><img id="liveExternalRgb" alt="Live external RGB"><figcaption>External RGB</figcaption></figure>
+            <figure><img id="liveHandRgb" alt="Live hand RGB"><figcaption>Hand RGB</figcaption></figure>
+          </div>
+          <div class="live-signal-grid">
+            <div class="signal-card">
+              <div class="signal-title">Robot status</div>
+              <pre id="robotLivePreview" class="signal-value">Waiting for robot data...</pre>
+            </div>
+            <div class="signal-card">
+              <div class="signal-title">Gripper status</div>
+              <pre id="gripperLivePreview" class="signal-value">Waiting for gripper data...</pre>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div>
+            <p class="panel-kicker">Command Options</p>
+            <h2>Recorder configuration</h2>
+          </div>
+          <div class="form-grid">
+            <label>Instruction (used when clicking Start episode) <input id="instructionInput" type="text" value="untitled"></label>
+            <label>Record root <input id="recordRootInput" type="text"></label>
+            <label>FPS <input id="fpsInput" type="number" min="1" max="60" value="15"></label>
+            <label>Hand width <input id="handWidthInput" type="number" min="160" max="4096" value="640"></label>
+            <label>Hand height <input id="handHeightInput" type="number" min="120" max="4096" value="480"></label>
+            <label>External width <input id="externalWidthInput" type="number" min="160" max="4096" value="1280"></label>
+            <label>External height <input id="externalHeightInput" type="number" min="120" max="4096" value="720"></label>
+            <label>Hand serial <input id="handSerialInput" type="text" placeholder="auto"></label>
+            <label>External serial <input id="externalSerialInput" type="text" placeholder="auto"></label>
+            <label>Hand product IDs <input id="handProductIdsInput" type="text" value="0B5B"></label>
+            <label>External product IDs <input id="externalProductIdsInput" type="text" value="0B5B"></label>
+            <label>Camera start retries <input id="cameraStartRetriesInput" type="number" min="0" value="20"></label>
+            <label>Retry delay sec <input id="cameraStartRetryDelayInput" type="number" min="0" step="0.1" value="0.5"></label>
+            <label>Post-reset wait sec <input id="cameraPostResetWaitInput" type="number" min="0" step="0.1" value="2.0"></label>
+            <label>Robot IP <input id="robotIpInput" type="text" placeholder="robot controller IP"></label>
+            <label>Robot FPS <input id="robotFpsInput" type="number" min="1" max="1000" value="200"></label>
+            <label>Gripper port <input id="gripperPortInput" type="number" min="1" max="65535" value="63352"></label>
+            <label>Collection mode <select id="subtaskSegmentIndexInput">
+              <option value="0">Full task - normal reset</option>
+              <option value="1">Skill 1 - grasp RAM</option>
+              <option value="2">Skill 2 - insert RAM</option>
+            </select></label>
+            <label>Subtask reset XYZ noise m <input id="subtaskResetNoiseInput" type="number" min="0" max="0.1" step="0.001" value="0.01"></label>
+          </div>
+
+          <div class="check-grid">
+            <label class="toggle"><input id="cameraBusyResetCheckbox" type="checkbox" checked><span>Auto camera reset</span></label>
+          </div>
+          <div class="config-note">
+            Collection mode controls Reset: Full task uses the normal reset, Skill 1 starts at RAM grasp, and Skill 2 starts at RAM insertion with uniform XYZ reset noise.
+          </div>
+          <div class="config-note">
+            All inputs are requested by default. Missing inputs never block initialization, and the status row above shows what is currently available.
+          </div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="/static/app.js?v=20260508a" defer></script>
+</body>
+</html>
