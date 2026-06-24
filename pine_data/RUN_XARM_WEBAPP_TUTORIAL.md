@@ -125,9 +125,33 @@ recordings/YYYYMMDD/<instruction>/camera_npy/YYYYMMDDHHMMSS/
 ROBOT_IP=<xarm_ip>
 ROBOT_BACKEND=xarm
 XARM_CONTROLLER_PATH=/home/pine/liangzi/PinedataXArm/test.py
+XARM_TELEOP_SPEED=150
+XARM_TELEOP_ROTATION_SPEED=0.60
 ```
 
 如果 `test.py` 没有移动，通常只需要传 `ROBOT_IP`。
+
+其中：
+
+- `XARM_TELEOP_SPEED` 是 SpaceMouse 最大线速度，单位 `mm/s`，有效范围 `(0, 1000]`
+- `XARM_TELEOP_ROTATION_SPEED` 是 SpaceMouse 最大旋转速度，单位 `rad/s`，有效范围 `(0, 3.14]`
+
+例如把最大线速度提高到 `300 mm/s`：
+
+```bash
+cd /home/pine/liangzi/PinedataXArm/pine_data
+XARM_TELEOP_SPEED=300 ROBOT_IP=<xarm_ip> ./run_recording_webapp.sh
+```
+
+同时调整线速度和旋转速度：
+
+```bash
+cd /home/pine/liangzi/PinedataXArm/pine_data
+XARM_TELEOP_SPEED=300 XARM_TELEOP_ROTATION_SPEED=1.0 ROBOT_IP=<xarm_ip> ./run_recording_webapp.sh
+```
+
+修改速度后需要先关闭已有的录制 tmux session，再重新 Initialize，新的
+SpaceMouse 进程才会使用新速度。
 
 相机相关变量也可以在启动前覆盖，例如：
 

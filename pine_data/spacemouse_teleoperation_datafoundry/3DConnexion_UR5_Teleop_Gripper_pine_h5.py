@@ -183,9 +183,15 @@ SPACEMOUSE_INPUT_DEADBAND = 0.08
 SPACEMOUSE_RESPONSE_EXPONENT = float(os.environ.get("SPACEMOUSE_RESPONSE_EXPONENT", "2.0"))
 
 # Speed configuration
-# Use the former "inside work area" slower linear speed everywhere.
-TELEOP_TRANSLATION_SPEED_SCALE = 0.150
-TELEOP_ROTATION_SPEED_SCALE = 0.60
+# SpaceMouse outputs normalized values. Convert the configured xArm maximum
+# linear speed from mm/s to the m/s expected by the existing RTDE-style loop.
+XARM_TELEOP_SPEED_MM_S = float(os.environ.get("XARM_TELEOP_SPEED", "150"))
+if not 0 < XARM_TELEOP_SPEED_MM_S <= 1000:
+    raise ValueError("XARM_TELEOP_SPEED must be in the range (0, 1000] mm/s.")
+TELEOP_TRANSLATION_SPEED_SCALE = XARM_TELEOP_SPEED_MM_S / 1000.0
+TELEOP_ROTATION_SPEED_SCALE = float(os.environ.get("XARM_TELEOP_ROTATION_SPEED", "0.60"))
+if not 0 < TELEOP_ROTATION_SPEED_SCALE <= 3.14:
+    raise ValueError("XARM_TELEOP_ROTATION_SPEED must be in the range (0, 3.14] rad/s.")
 TELEOP_DOWNWARD_Z_EXTRA_SCALE = 0.40
 TELEOP_COMMAND_HORIZON_S = 0.01
 NON_TELEOP_SPEED_SCALE = 1.00   # reset / non-teleop motions = 100%
@@ -1003,8 +1009,8 @@ def main():
     print("  - Press 'Ctrl+R': Reset to home position")
     print("  - Press 'U': Clear local SpaceMouse command state without touching RTDE or recording")
     print("  - Ctrl+C: Quit and save trajectory")
-    print(f"Linear teleop speed scale: {TELEOP_TRANSLATION_SPEED_SCALE * 100:.1f}%")
-    print(f"Angular teleop speed scale: {TELEOP_ROTATION_SPEED_SCALE * 100:.0f}%")
+    print(f"Maximum linear teleop speed: {XARM_TELEOP_SPEED_MM_S:.1f} mm/s")
+    print(f"Maximum angular teleop speed: {TELEOP_ROTATION_SPEED_SCALE:.2f} rad/s")
     print(f"Downward Z extra scale: {TELEOP_DOWNWARD_Z_EXTRA_SCALE * 100:.0f}%")
     print(f"Startup command grace: {TELEOP_STARTUP_COMMAND_GRACE_S:.2f}s")
     print(f"SpaceMouse stale stop timeout: {SPACEMOUSE_STALE_STOP_S:.2f}s")

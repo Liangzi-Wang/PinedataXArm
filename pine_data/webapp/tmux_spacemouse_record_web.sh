@@ -35,6 +35,8 @@ CAMERA_SCRIPT="${CAMERA_SCRIPT:-${WEBAPP_DIR}/record_multi_camera_npy_web.py}"
 
 ROBOT_BACKEND="${ROBOT_BACKEND:-xarm}"
 XARM_CONTROLLER_PATH="${XARM_CONTROLLER_PATH:-${PINE_DIR}/../test.py}"
+XARM_TELEOP_SPEED="${XARM_TELEOP_SPEED:-150}"
+XARM_TELEOP_ROTATION_SPEED="${XARM_TELEOP_ROTATION_SPEED:-0.60}"
 if [[ "$ROBOT_BACKEND" == "xarm" ]]; then
   XARM_ROBOT_IP="${XARM_ROBOT_IP:-${ROBOT_IP:-192.168.1.10}}"
   ROBOT_IP="${ROBOT_IP:-${XARM_ROBOT_IP}}"
@@ -100,9 +102,11 @@ require_file "$TELEOP_SCRIPT"
 require_file "$CAMERA_SCRIPT"
 
 printf -v robot_env_prefix \
-  'export ROBOT_BACKEND=%q XARM_CONTROLLER_PATH=%q; ' \
+  'export ROBOT_BACKEND=%q XARM_CONTROLLER_PATH=%q XARM_TELEOP_SPEED=%q XARM_TELEOP_ROTATION_SPEED=%q; ' \
   "$ROBOT_BACKEND" \
-  "$XARM_CONTROLLER_PATH"
+  "$XARM_CONTROLLER_PATH" \
+  "$XARM_TELEOP_SPEED" \
+  "$XARM_TELEOP_ROTATION_SPEED"
 
 teleop_cmd="${robot_env_prefix}source \"${TELEOP_ENV}/bin/activate\" && cd \"${PINE_DIR}\" && python \"${TELEOP_SCRIPT}\" --robot-ip \"${UR_ROBOT_IP}\" --root \"${RECORD_ROOT}\""
 if [[ -n "$TELEOP_EXTRA_ARGS" ]]; then
