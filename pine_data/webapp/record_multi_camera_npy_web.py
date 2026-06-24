@@ -643,7 +643,8 @@ class CameraRecorder():
         if RTDEReceiveInterface is None:
             msg = (
                 "Robot receiver backend is unavailable, cannot record robot state. "
-                "Install ur_rtde for ROBOT_BACKEND=ur, or set XARM_SDK_PATH for ROBOT_BACKEND=xarm."
+                "Install ur_rtde for ROBOT_BACKEND=ur, or set XARM_CONTROLLER_PATH "
+                "for ROBOT_BACKEND=xarm."
             )
             if self.allow_missing_robot:
                 print(f"WARNING: {msg}")

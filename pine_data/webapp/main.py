@@ -1068,7 +1068,10 @@ class TmuxRecordingManager:
             "SESSION_NAME": self.session_name,
             "ATTACH_ON_START": "0",
             "ROBOT_BACKEND": os.getenv("ROBOT_BACKEND", "xarm"),
-            "XARM_SDK_PATH": os.getenv("XARM_SDK_PATH", str((BASE_DIR.parent / "../xArm-Python-SDK").resolve())),
+            "XARM_CONTROLLER_PATH": os.getenv(
+                "XARM_CONTROLLER_PATH",
+                str((BASE_DIR.parent / "../test.py").resolve()),
+            ),
             "RECORD_ROOT": str(Path(config.root).expanduser().resolve()),
             "FPS": str(config.fps),
             "HAND_SERIAL": config.hand_serial.strip(),

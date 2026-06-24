@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import importlib.util
+import math
 import os
 import sys
 import threading
 from pathlib import Path
+from types import ModuleType
 from typing import Iterable
 
 
@@ -14,28 +17,48 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off", ""}
 
 
-def _sdk_path() -> Path:
-    configured = os.getenv("XARM_SDK_PATH", "").strip()
+def _controller_path() -> Path:
+    configured = os.getenv("XARM_CONTROLLER_PATH", "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
-    return Path(__file__).resolve().parents[1] / "xArm-Python-SDK"
+    return Path(__file__).resolve().parents[1] / "test.py"
 
 
-SDK_PATH = _sdk_path()
-if str(SDK_PATH) not in sys.path:
-    sys.path.insert(0, str(SDK_PATH))
+CONTROLLER_PATH = _controller_path()
+XARM_PACKAGE_PATH = CONTROLLER_PATH.parent / "xArm-Python-SDK"
+if str(XARM_PACKAGE_PATH) not in sys.path:
+    sys.path.insert(0, str(XARM_PACKAGE_PATH))
 
-XARM_SDK_HOME = Path(os.getenv("XARM_SDK_HOME", Path(__file__).resolve().parent / ".runtime" / "xarm_home")).expanduser().resolve()
+XARM_SDK_HOME = Path(
+    os.getenv("XARM_SDK_HOME", Path(__file__).resolve().parent / ".runtime" / "xarm_home")
+).expanduser().resolve()
 XARM_SDK_HOME.mkdir(parents=True, exist_ok=True)
+
+
+def _load_controller_module() -> ModuleType:
+    if not CONTROLLER_PATH.is_file():
+        raise ImportError(
+            f"xArm controller file not found: {CONTROLLER_PATH}. "
+            "Set XARM_CONTROLLER_PATH to the project test.py file."
+        )
+    spec = importlib.util.spec_from_file_location("_pinedata_xarm_controller", CONTROLLER_PATH)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load xArm controller module from {CONTROLLER_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
 
 _ORIGINAL_HOME = os.environ.get("HOME")
 os.environ["HOME"] = str(XARM_SDK_HOME)
 try:
-    from xarm.wrapper import XArmAPI
-except ImportError as exc:
+    _controller_module = _load_controller_module()
+    XArmController = _controller_module.XArmController
+except (ImportError, AttributeError) as exc:
     raise ImportError(
-        f"Could not import xArm SDK from {SDK_PATH}. "
-        "Set XARM_SDK_PATH or install xarm-python-sdk."
+        f"Could not import XArmController from {CONTROLLER_PATH}. "
+        "Ensure test.py defines XArmController and its xarm dependency is available."
     ) from exc
 finally:
     if _ORIGINAL_HOME is None:
@@ -72,7 +95,10 @@ class _SharedXArmClient:
     def __init__(self, host: str) -> None:
         self.host = host
         self.lock = threading.RLock()
-        self.arm = XArmAPI(host, is_radian=True)
+        self.controller = XArmController(ip=host)
+        self.arm = self.controller.arm
+        if not self.arm.connected:
+            raise XArmBridgeError(f"test.py XArmController could not connect to {host}")
         self.mode: int | None = None
         self.last_tcp_speed = [0.0] * 6
 
@@ -101,7 +127,7 @@ class _SharedXArmClient:
 
     def disconnect(self) -> None:
         with self.lock:
-            self.arm.disconnect()
+            self.controller.disconnect()
 
 
 _CLIENTS: dict[str, _SharedXArmClient] = {}
@@ -150,7 +176,7 @@ class XArmControlInterface:
         self.client.stop_velocity()
 
     def moveL(self, pose, speed=0.1, acceleration=0.1, asynchronous=False):
-        del asynchronous
+        del acceleration, asynchronous
         if not _env_bool("XARM_ENABLE_RESET_MOTIONS", False):
             raise XArmBridgeError(
                 "xArm moveL is disabled because the existing reset poses are UR-specific. "
@@ -159,41 +185,25 @@ class XArmControlInterface:
         pose_values = _as_float_list(pose, 6)
         with self.client.lock:
             self.client.set_mode(0)
-            _require_code_ok(
-                self.client.arm.set_position(
-                    x=pose_values[0] * 1000.0,
-                    y=pose_values[1] * 1000.0,
-                    z=pose_values[2] * 1000.0,
-                    roll=pose_values[3],
-                    pitch=pose_values[4],
-                    yaw=pose_values[5],
-                    speed=float(speed) * 1000.0,
-                    mvacc=float(acceleration) * 1000.0,
-                    is_radian=True,
-                    wait=True,
-                ),
-                "set_position",
+            current = _as_float_list(
+                _result_value(self.client.arm.get_position(is_radian=True), "get_position"),
+                6,
             )
+            moved = self.client.controller.move_relative(
+                dx=pose_values[0] * 1000.0 - current[0],
+                dy=pose_values[1] * 1000.0 - current[1],
+                dz=pose_values[2] * 1000.0 - current[2],
+                dr=math.degrees(pose_values[3] - current[3]),
+                dp=math.degrees(pose_values[4] - current[4]),
+                dyaw=math.degrees(pose_values[5] - current[5]),
+                speed=float(speed) * 1000.0,
+            )
+            if not moved:
+                raise XArmBridgeError("test.py move_relative failed")
 
     def moveJ(self, joint_pose, velocity=0.5, acceleration=0.5, asynchronous=False):
-        del asynchronous
-        if not _env_bool("XARM_ENABLE_RESET_MOTIONS", False):
-            raise XArmBridgeError(
-                "xArm moveJ is disabled because the existing reset poses are UR-specific. "
-                "Set XARM_ENABLE_RESET_MOTIONS=1 only after replacing them with xArm-safe poses."
-            )
-        with self.client.lock:
-            self.client.set_mode(0)
-            _require_code_ok(
-                self.client.arm.set_servo_angle(
-                    angle=_as_float_list(joint_pose),
-                    speed=float(velocity),
-                    mvacc=float(acceleration),
-                    is_radian=True,
-                    wait=True,
-                ),
-                "set_servo_angle",
-            )
+        del joint_pose, velocity, acceleration, asynchronous
+        raise XArmBridgeError("test.py XArmController does not expose a joint motion method.")
 
     def zeroFtSensor(self):
         with self.client.lock:
@@ -315,15 +325,8 @@ class XArmSDKGripper:
             return clipped
         physical_position = self._open_pos + clipped * self._close_direction
         with self.client.lock:
-            _require_code_ok(
-                self.client.arm.set_gripper_position(
-                    physical_position,
-                    wait=False,
-                    speed=self._speed,
-                    auto_enable=True,
-                ),
-                "set_gripper_position",
-            )
+            if not self.client.controller.set_gripper(physical_position, speed=self._speed):
+                raise XArmBridgeError("test.py set_gripper failed")
         self._last_command_position = clipped
         if clipped == 0:
             self.state = "open"

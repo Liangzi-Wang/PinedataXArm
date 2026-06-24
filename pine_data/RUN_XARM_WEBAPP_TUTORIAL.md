@@ -7,7 +7,8 @@
 - UI 继续使用 `pine_data/webapp` 这套 DataFoundry 页面
 - 相机录制继续使用 `pine_data/webapp/record_multi_camera_npy_web.py`
 - SpaceMouse 遥操作继续使用 `pine_data/spacemouse_teleoperation_datafoundry/3DConnexion_UR5_Teleop_Gripper_pine_h5.py`
-- 机器人底层不再直接走 UR RTDE，而是通过 `pine_data/xarm_bridge.py` 调 `xArm-Python-SDK`
+- 机器人入口改为 `PinedataXArm/test.py` 中的 `XArmController`
+- `pine_data/xarm_bridge.py` 负责让现有 UI 和遥操作代码兼容这个控制器
 
 ## 1. 目录关系
 
@@ -15,6 +16,7 @@
 
 ```text
 /home/pine/liangzi/PinedataXArm/
+├── test.py
 ├── pine_data/
 │   ├── xarm_bridge.py
 │   ├── run_recording_webapp.sh
@@ -27,14 +29,16 @@
 
 - `pine_data/webapp/run_recording_webapp.sh` 是实际启动 Web UI 的脚本
 - `pine_data/run_recording_webapp.sh` 是一个额外包装入口，会转发到 `webapp/run_recording_webapp.sh`
-- `pine_data/xarm_bridge.py` 是兼容层
-- `xArm-Python-SDK` 提供实际的 xArm Python 接口
+- `test.py` 提供项目统一使用的 `XArmController`
+- `pine_data/xarm_bridge.py` 加载 `test.py`，并适配旧的 RTDE 风格调用
+- `xArm-Python-SDK` 是 `test.py` 自身依赖的 Python 包源码
 
 ## 2. 运行前准备
 
 确保以下条件满足：
 
 - `pine_data/data_record_env` 已经创建好，并装好了 Web UI、相机和输入设备依赖
+- `/home/pine/liangzi/PinedataXArm/test.py` 存在，并定义了 `XArmController`
 - `xArm-Python-SDK` 目录存在：
   `/home/pine/liangzi/PinedataXArm/xArm-Python-SDK`
 - xArm 机械臂已经联网，并且你知道它的 IP
@@ -91,7 +95,7 @@ http://127.0.0.1:8000
 如果你走的是根目录包装入口，那么在上面两层之前还会先经过：
 
 `pine_data/run_recording_webapp.sh`
-作用：设置 `PINE_DIR`、`WEBAPP_DIR`、`ROBOT_BACKEND=xarm`、`XARM_SDK_PATH`，然后转发到 `webapp/run_recording_webapp.sh`
+作用：设置 `PINE_DIR`、`WEBAPP_DIR`、`ROBOT_BACKEND=xarm`、`XARM_CONTROLLER_PATH`，然后转发到 `webapp/run_recording_webapp.sh`
 
 UI 本身只负责页面和控制命令，不直接操作机械臂。
 
@@ -120,10 +124,10 @@ recordings/YYYYMMDD/<instruction>/camera_npy/YYYYMMDDHHMMSS/
 ```bash
 ROBOT_IP=<xarm_ip>
 ROBOT_BACKEND=xarm
-XARM_SDK_PATH=/home/pine/liangzi/PinedataXArm/xArm-Python-SDK
+XARM_CONTROLLER_PATH=/home/pine/liangzi/PinedataXArm/test.py
 ```
 
-如果默认路径没变，通常只需要传 `ROBOT_IP`。
+如果 `test.py` 没有移动，通常只需要传 `ROBOT_IP`。
 
 相机相关变量也可以在启动前覆盖，例如：
 
@@ -153,7 +157,7 @@ ALLOW_MISSING_EXTERNAL=1
 - [spacemouse_teleoperation_datafoundry/3DConnexion_UR5_Teleop_Gripper_pine_h5.py](/home/pine/liangzi/PinedataXArm/pine_data/spacemouse_teleoperation_datafoundry/3DConnexion_UR5_Teleop_Gripper_pine_h5.py)
   SpaceMouse 遥操作主循环
 - [xarm_bridge.py](/home/pine/liangzi/PinedataXArm/pine_data/xarm_bridge.py)
-  把旧的 RTDE 风格方法名映射到 xArm SDK
+  加载 `test.py` 中的 `XArmController`，并适配旧的 RTDE 风格方法名
 
 ### 兼容层暴露给旧代码的方法名
 
@@ -178,11 +182,21 @@ ALLOW_MISSING_EXTERNAL=1
   `getActualCurrentAsTorque`
   `disconnect`
 
-## 8. 实际调用了哪些 xArm SDK 接口
+## 8. 实际调用了哪些机器人接口
 
-`pine_data/xarm_bridge.py` 内部实际调的是 `xArm-Python-SDK` 的 `XArmAPI`。
+`pine_data/xarm_bridge.py` 首先按 `XARM_CONTROLLER_PATH` 加载 `test.py`，然后创建：
 
-### 8.1 运动控制接口
+```python
+XArmController(ip=robot_ip)
+```
+
+`test.py` 中已封装的方法会优先直接使用：
+
+- `move_relative(...)`
+- `set_gripper(...)`
+- `disconnect()`
+
+### 8.1 实时运动控制接口
 
 SpaceMouse 控制和停机主要会调用：
 
@@ -190,12 +204,12 @@ SpaceMouse 控制和停机主要会调用：
 - `set_mode(5)`
 - `set_state(0)`
 - `vc_set_cartesian_velocity(...)`
-- `disconnect()`
 
 其中：
 
 - `set_mode(5)` 表示笛卡尔速度控制模式
 - `vc_set_cartesian_velocity(...)` 是 SpaceMouse 实时速度控制的核心接口
+- 这些实时接口在当前 `test.py` 中尚未封装，因此通过 `XArmController.arm` 调用
 
 ### 8.2 机器人状态采样接口
 
@@ -207,6 +221,9 @@ SpaceMouse 控制和停机主要会调用：
 - `get_ft_sensor_data()`
 - `get_joints_torque()`
 - `get_joint_states(is_radian=True, num=3)`
+
+这些状态读取方法在当前 `test.py` 中也尚未封装，因此通过
+`XArmController.arm` 读取。
 
 这些数据会被转换后写入：
 
@@ -220,10 +237,10 @@ SpaceMouse 控制和停机主要会调用：
 
 如果启用了 xArm 自带夹爪状态/控制，桥接层会调用：
 
+- `XArmController.set_gripper(...)`
 - `set_gripper_mode(0)`
 - `set_gripper_enable(True)`
 - `set_gripper_speed(...)`
-- `set_gripper_position(...)`
 - `get_gripper_position()`
 - `get_gripper_status()`
 
@@ -248,6 +265,9 @@ XARM_ENABLE_RESET_MOTIONS=1
 
 在没有把 reset pose 改成 xArm 安全点位之前，不建议打开。
 
+另外，`test.py` 当前没有提供关节运动方法，所以 `moveJ` 不会执行。即使开启
+`XARM_ENABLE_RESET_MOTIONS=1`，需要关节复位的流程仍会明确报错。
+
 ## 10. 常见问题
 
 ### UI 能打开，但点 Initialize 后机器人没连上
@@ -255,6 +275,8 @@ XARM_ENABLE_RESET_MOTIONS=1
 先检查：
 
 - `ROBOT_IP` 是否正确
+- `XARM_CONTROLLER_PATH` 是否指向 `/home/pine/liangzi/PinedataXArm/test.py`
+- `test.py` 中是否仍然定义了 `XArmController`
 - `xArm-Python-SDK` 目录是否存在
 - 机械臂是否和这台机器网络互通
 
@@ -269,7 +291,8 @@ XARM_ENABLE_RESET_MOTIONS=1
 ### 为什么文档里还会出现 RTDE 这个名字
 
 因为这次改造保留了旧代码的函数名和调用习惯，方便最小代价接入。  
-也就是说，脚本表面上还是在调用 `RTDEControlInterface/RTDEReceiveInterface` 风格的方法，但底层实际已经切到了 `xArm-Python-SDK`。
+也就是说，脚本表面上还是在调用 `RTDEControlInterface/RTDEReceiveInterface`
+风格的方法，但机器人对象实际由 `test.py` 中的 `XArmController` 创建。
 
 ## 11. 推荐的最小启动命令
 
