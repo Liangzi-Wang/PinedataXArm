@@ -30,13 +30,24 @@ fi
 
 CAMERA_ENV="${CAMERA_ENV:-${PINE_DIR}/data_record_env}"
 
-TELEOP_SCRIPT="${TELEOP_SCRIPT:-${PINE_DIR}/spacemouse_teleoperation_datafoundry/3DConnexion_UR5_Teleop_Gripper_pine_h5.py}"
+QUEUE_TELEOP_SUPERVISOR="${QUEUE_TELEOP_SUPERVISOR:-${PINE_DIR}/queue_teleop_supervisor.py}"
+SPACEMOUSE_QUEUE_PUBLISHER_SCRIPT="${SPACEMOUSE_QUEUE_PUBLISHER_SCRIPT:-${PINE_DIR}/../spacemouse_queue_publisher.py}"
+XARM_QUEUE_TELEOP_SCRIPT="${XARM_QUEUE_TELEOP_SCRIPT:-${PINE_DIR}/../xarm_queue_teleop.py}"
+XARM_SDK_PATH="${XARM_SDK_PATH:-${PINE_DIR}/../xArm-Python-SDK}"
 CAMERA_SCRIPT="${CAMERA_SCRIPT:-${WEBAPP_DIR}/record_multi_camera_npy_web.py}"
 
 ROBOT_BACKEND="${ROBOT_BACKEND:-xarm}"
 XARM_CONTROLLER_PATH="${XARM_CONTROLLER_PATH:-${PINE_DIR}/../test.py}"
 XARM_TELEOP_SPEED="${XARM_TELEOP_SPEED:-150}"
-XARM_TELEOP_ROTATION_SPEED="${XARM_TELEOP_ROTATION_SPEED:-0.60}"
+XARM_TELEOP_ANGULAR_SPEED="${XARM_TELEOP_ANGULAR_SPEED:-30}"
+XARM_MOVE_ACCELERATION="${XARM_MOVE_ACCELERATION:-1000}"
+XARM_COMMAND_PERIOD_S="${XARM_COMMAND_PERIOD_S:-0.02}"
+XARM_TELEOP_CONTROL_MODE="${XARM_TELEOP_CONTROL_MODE:-position}"
+SPACEMOUSE_QUEUE_HOST="${SPACEMOUSE_QUEUE_HOST:-127.0.0.1}"
+SPACEMOUSE_QUEUE_PORT="${SPACEMOUSE_QUEUE_PORT:-8765}"
+SPACEMOUSE_QUEUE_AUTHKEY="${SPACEMOUSE_QUEUE_AUTHKEY:-spacemouse}"
+SPACEMOUSE_QUEUE_PUBLISH_HZ="${SPACEMOUSE_QUEUE_PUBLISH_HZ:-100}"
+XARM_QUEUE_POLL_HZ="${XARM_QUEUE_POLL_HZ:-200}"
 if [[ "$ROBOT_BACKEND" == "xarm" ]]; then
   XARM_ROBOT_IP="${XARM_ROBOT_IP:-${ROBOT_IP:-192.168.1.10}}"
   ROBOT_IP="${ROBOT_IP:-${XARM_ROBOT_IP}}"
@@ -55,9 +66,9 @@ ALLOW_MISSING_HAND="${ALLOW_MISSING_HAND:-0}"
 ALLOW_MISSING_WRIST="${ALLOW_MISSING_WRIST:-0}"
 ALLOW_MISSING_EXTERNAL="${ALLOW_MISSING_EXTERNAL:-0}"
 
-TELEOP_EXTRA_ARGS="${TELEOP_EXTRA_ARGS:-}"
 CAMERA_EXTRA_ARGS="${CAMERA_EXTRA_ARGS:-}"
 KILL_STALE_CAMERA_PROCESS="${KILL_STALE_CAMERA_PROCESS:-1}"
+TELEOP_STATUS_FILE="${TELEOP_STATUS_FILE:-${WEBAPP_DIR}/.runtime/${SESSION_NAME}_teleop_status.json}"
 
 ENABLE_ROBOT_RECORDING="${ENABLE_ROBOT_RECORDING:-1}"
 ROBOT_FPS="${ROBOT_FPS:-200}"
@@ -98,20 +109,32 @@ require_dir "$PINE_DIR"
 require_dir "$WEBAPP_DIR"
 require_dir "$TELEOP_ENV"
 require_dir "$CAMERA_ENV"
-require_file "$TELEOP_SCRIPT"
+require_dir "$XARM_SDK_PATH"
+require_file "$QUEUE_TELEOP_SUPERVISOR"
+require_file "$SPACEMOUSE_QUEUE_PUBLISHER_SCRIPT"
+require_file "$XARM_QUEUE_TELEOP_SCRIPT"
 require_file "$CAMERA_SCRIPT"
 
 printf -v robot_env_prefix \
-  'export ROBOT_BACKEND=%q XARM_CONTROLLER_PATH=%q XARM_TELEOP_SPEED=%q XARM_TELEOP_ROTATION_SPEED=%q; ' \
+  'export ROBOT_BACKEND=%q ROBOT_IP=%q XARM_IP=%q XARM_CONTROLLER_PATH=%q XARM_TELEOP_SPEED=%q XARM_TELEOP_ANGULAR_SPEED=%q XARM_MOVE_ACCELERATION=%q XARM_COMMAND_PERIOD_S=%q XARM_TELEOP_CONTROL_MODE=%q; ' \
   "$ROBOT_BACKEND" \
+  "$ROBOT_IP" \
+  "$ROBOT_IP" \
   "$XARM_CONTROLLER_PATH" \
   "$XARM_TELEOP_SPEED" \
-  "$XARM_TELEOP_ROTATION_SPEED"
+  "$XARM_TELEOP_ANGULAR_SPEED" \
+  "$XARM_MOVE_ACCELERATION" \
+  "$XARM_COMMAND_PERIOD_S" \
+  "$XARM_TELEOP_CONTROL_MODE"
 
-teleop_cmd="${robot_env_prefix}source \"${TELEOP_ENV}/bin/activate\" && cd \"${PINE_DIR}\" && python \"${TELEOP_SCRIPT}\" --robot-ip \"${UR_ROBOT_IP}\" --root \"${RECORD_ROOT}\""
-if [[ -n "$TELEOP_EXTRA_ARGS" ]]; then
-  teleop_cmd+=" ${TELEOP_EXTRA_ARGS}"
-fi
+teleop_cmd="${robot_env_prefix}source \"${TELEOP_ENV}/bin/activate\" && cd \"${PINE_DIR}\" && python \"${QUEUE_TELEOP_SUPERVISOR}\""
+teleop_cmd+=" --publisher-script \"${SPACEMOUSE_QUEUE_PUBLISHER_SCRIPT}\""
+teleop_cmd+=" --teleop-script \"${XARM_QUEUE_TELEOP_SCRIPT}\""
+teleop_cmd+=" --status-file \"${TELEOP_STATUS_FILE}\""
+teleop_cmd+=" --sdk-path \"${XARM_SDK_PATH}\""
+teleop_cmd+=" --host \"${SPACEMOUSE_QUEUE_HOST}\" --port \"${SPACEMOUSE_QUEUE_PORT}\""
+teleop_cmd+=" --authkey \"${SPACEMOUSE_QUEUE_AUTHKEY}\""
+teleop_cmd+=" --publish-hz \"${SPACEMOUSE_QUEUE_PUBLISH_HZ}\" --poll-hz \"${XARM_QUEUE_POLL_HZ}\""
 
 camera_cmd="${robot_env_prefix}source \"${CAMERA_ENV}/bin/activate\" && cd \"${WEBAPP_DIR}\" && python \"${CAMERA_SCRIPT}\" --root \"${RECORD_ROOT}\" --fps \"${FPS}\""
 if [[ -n "$HAND_SERIAL" ]]; then
@@ -181,7 +204,7 @@ tmux set-option -t "$SESSION_NAME" mouse on
 tmux select-pane -t "$SESSION_NAME:main.1"
 
 echo "Started tmux session: $SESSION_NAME"
-echo "  Pane 0 (left): spacemouse teleop"
+echo "  Pane 0 (left): SpaceMouse queue publisher + xArm queue teleop"
 echo "  Pane 1 (right): webapp camera + robot state (focused)"
 
 if [[ "$ATTACH_ON_START" == "1" ]]; then

@@ -6,9 +6,9 @@
 
 - UI 继续使用 `pine_data/webapp` 这套 DataFoundry 页面
 - 相机录制继续使用 `pine_data/webapp/record_multi_camera_npy_web.py`
-- SpaceMouse 遥操作继续使用 `pine_data/spacemouse_teleoperation_datafoundry/3DConnexion_UR5_Teleop_Gripper_pine_h5.py`
-- 机器人入口改为 `PinedataXArm/test.py` 中的 `XArmController`
-- `pine_data/xarm_bridge.py` 负责让现有 UI 和遥操作代码兼容这个控制器
+- SpaceMouse 输入由 `spacemouse_queue_publisher.py` 发布到本机队列
+- 机械臂控制由 `xarm_queue_teleop.py` 消费队列并调用 `set_position`
+- `pine_data/xarm_bridge.py` 继续为录制器提供机器人状态采样
 
 ## 1. 目录关系
 
@@ -16,8 +16,11 @@
 
 ```text
 /home/pine/liangzi/PinedataXArm/
-├── test.py
+├── spacemouse_queue_publisher.py
+├── xarm_queue_teleop.py
 ├── pine_data/
+│   ├── queue_spacemouse_publisher_bridge.py
+│   ├── queue_teleop_supervisor.py
 │   ├── xarm_bridge.py
 │   ├── run_recording_webapp.sh
 │   └── webapp/
@@ -29,16 +32,19 @@
 
 - `pine_data/webapp/run_recording_webapp.sh` 是实际启动 Web UI 的脚本
 - `pine_data/run_recording_webapp.sh` 是一个额外包装入口，会转发到 `webapp/run_recording_webapp.sh`
-- `test.py` 提供项目统一使用的 `XArmController`
-- `pine_data/xarm_bridge.py` 加载 `test.py`，并适配旧的 RTDE 风格调用
-- `xArm-Python-SDK` 是 `test.py` 自身依赖的 Python 包源码
+- `spacemouse_queue_publisher.py` 读取 SpaceMouse 并发布队列状态
+- `xarm_queue_teleop.py` 消费队列并控制机械臂
+- `pine_data/queue_teleop_supervisor.py` 同时监管上述两个进程
+- `pine_data/queue_spacemouse_publisher_bridge.py` 把 SpaceMouse 状态写给 UI
+- `pine_data/xarm_bridge.py` 为录制器提供关节、TCP、力和力矩状态
 
 ## 2. 运行前准备
 
 确保以下条件满足：
 
 - `pine_data/data_record_env` 已经创建好，并装好了 Web UI、相机和输入设备依赖
-- `/home/pine/liangzi/PinedataXArm/test.py` 存在，并定义了 `XArmController`
+- `/home/pine/liangzi/PinedataXArm/spacemouse_queue_publisher.py` 存在
+- `/home/pine/liangzi/PinedataXArm/xarm_queue_teleop.py` 存在
 - `xArm-Python-SDK` 目录存在：
   `/home/pine/liangzi/PinedataXArm/xArm-Python-SDK`
 - xArm 机械臂已经联网，并且你知道它的 IP
@@ -89,7 +95,7 @@ http://127.0.0.1:8000
 
 2. `pine_data/webapp/tmux_spacemouse_record_web.sh`
    作用：在 tmux 里拉起两个 pane
-   - 左侧：SpaceMouse 遥操作进程
+   - 左侧：SpaceMouse 队列 publisher + xArm 队列控制器
    - 右侧：相机录制 + 机器人状态录制进程
 
 如果你走的是根目录包装入口，那么在上面两层之前还会先经过：
@@ -126,15 +132,15 @@ ROBOT_IP=<xarm_ip>
 ROBOT_BACKEND=xarm
 XARM_CONTROLLER_PATH=/home/pine/liangzi/PinedataXArm/test.py
 XARM_TELEOP_SPEED=150
-XARM_TELEOP_ROTATION_SPEED=0.60
+XARM_TELEOP_ANGULAR_SPEED=30
 ```
 
-如果 `test.py` 没有移动，通常只需要传 `ROBOT_IP`。
+如果项目目录没有移动，通常只需要传 `ROBOT_IP`。
 
 其中：
 
-- `XARM_TELEOP_SPEED` 是 SpaceMouse 最大线速度，单位 `mm/s`，有效范围 `(0, 1000]`
-- `XARM_TELEOP_ROTATION_SPEED` 是 SpaceMouse 最大旋转速度，单位 `rad/s`，有效范围 `(0, 3.14]`
+- `XARM_TELEOP_SPEED` 是 SpaceMouse 最大线速度，单位 `mm/s`
+- `XARM_TELEOP_ANGULAR_SPEED` 是 SpaceMouse 最大旋转速度，单位 `deg/s`
 
 例如把最大线速度提高到 `300 mm/s`：
 
@@ -147,7 +153,7 @@ XARM_TELEOP_SPEED=300 ROBOT_IP=<xarm_ip> ./run_recording_webapp.sh
 
 ```bash
 cd /home/pine/liangzi/PinedataXArm/pine_data
-XARM_TELEOP_SPEED=300 XARM_TELEOP_ROTATION_SPEED=1.0 ROBOT_IP=<xarm_ip> ./run_recording_webapp.sh
+XARM_TELEOP_SPEED=300 XARM_TELEOP_ANGULAR_SPEED=45 ROBOT_IP=<xarm_ip> ./run_recording_webapp.sh
 ```
 
 修改速度后需要先关闭已有的录制 tmux session，再重新 Initialize，新的
@@ -178,62 +184,45 @@ ALLOW_MISSING_EXTERNAL=1
   Web API、初始化、状态读取、发送开始/停止/删除命令
 - [webapp/record_multi_camera_npy_web.py](/home/pine/liangzi/PinedataXArm/pine_data/webapp/record_multi_camera_npy_web.py)
   相机录制、机器人状态采样、episode 保存
-- [spacemouse_teleoperation_datafoundry/3DConnexion_UR5_Teleop_Gripper_pine_h5.py](/home/pine/liangzi/PinedataXArm/pine_data/spacemouse_teleoperation_datafoundry/3DConnexion_UR5_Teleop_Gripper_pine_h5.py)
-  SpaceMouse 遥操作主循环
+- [queue_teleop_supervisor.py](/home/pine/liangzi/PinedataXArm/pine_data/queue_teleop_supervisor.py)
+  启动并监管队列 publisher 与 xArm 控制器
+- [queue_spacemouse_publisher_bridge.py](/home/pine/liangzi/PinedataXArm/pine_data/queue_spacemouse_publisher_bridge.py)
+  把队列 publisher 状态同步给 Web UI
 - [xarm_bridge.py](/home/pine/liangzi/PinedataXArm/pine_data/xarm_bridge.py)
-  加载 `test.py` 中的 `XArmController`，并适配旧的 RTDE 风格方法名
+  为录制器适配旧的 RTDE 风格状态读取方法名
 
-### 兼容层暴露给旧代码的方法名
+### 队列遥操作调用链
 
-这些是旧录制器/旧遥操作脚本实际调用的方法名，调用者不用知道底层已经换成 xArm：
+```text
+SpaceMouse
+  -> spacemouse_queue_publisher.py
+  -> BaseManager 本机队列
+  -> xarm_queue_teleop.py
+  -> XArmAPI.set_position(..., wait=False)
+  -> xArm
+```
 
-- 控制接口：
-  `speedL`
-  `speedStop`
-  `stopL`
-  `stopScript`
-  `moveL`
-  `moveJ`
-  `zeroFtSensor`
-  `disconnect`
-- 状态接口：
-  `getRobotMode`
-  `getActualQ`
-  `getActualTCPPose`
-  `getActualTCPForce`
-  `getActualTCPSpeed`
-  `getJointTorques`
-  `getActualCurrentAsTorque`
-  `disconnect`
+录制器仍通过兼容层调用这些状态接口：
+
+- `getRobotMode`
+- `getActualQ`
+- `getActualTCPPose`
+- `getActualTCPForce`
+- `getActualTCPSpeed`
+- `getJointTorques`
+- `getActualCurrentAsTorque`
+- `disconnect`
 
 ## 8. 实际调用了哪些机器人接口
 
-`pine_data/xarm_bridge.py` 首先按 `XARM_CONTROLLER_PATH` 加载 `test.py`，然后创建：
-
-```python
-XArmController(ip=robot_ip)
-```
-
-`test.py` 中已封装的方法会优先直接使用：
-
-- `move_relative(...)`
-- `set_gripper(...)`
-- `disconnect()`
-
 ### 8.1 实时运动控制接口
 
-SpaceMouse 控制和停机主要会调用：
+`xarm_queue_teleop.py` 默认使用位置增量模式：
 
-- `motion_enable(True)`
-- `set_mode(5)`
-- `set_state(0)`
-- `vc_set_cartesian_velocity(...)`
-
-其中：
-
-- `set_mode(5)` 表示笛卡尔速度控制模式
-- `vc_set_cartesian_velocity(...)` 是 SpaceMouse 实时速度控制的核心接口
-- 这些实时接口在当前 `test.py` 中尚未封装，因此通过 `XArmController.arm` 调用
+- `get_position()`
+- `set_position(..., speed=..., mvacc=..., wait=False)`
+- `set_state(4)`：SpaceMouse 回到空闲时停止当前运动
+- `motion_enable(True)`、`set_mode(0)`、`set_state(0)`：停止后恢复可运动状态
 
 ### 8.2 机器人状态采样接口
 
@@ -259,12 +248,13 @@ SpaceMouse 控制和停机主要会调用：
 
 ### 8.3 夹爪接口
 
-如果启用了 xArm 自带夹爪状态/控制，桥接层会调用：
+如果启用了 xArm 自带夹爪控制，`xarm_queue_teleop.py` 会调用：
 
-- `XArmController.set_gripper(...)`
-- `set_gripper_mode(0)`
-- `set_gripper_enable(True)`
-- `set_gripper_speed(...)`
+- `get_gripper_position()`
+- `set_gripper_position(..., speed=..., wait=False)`
+
+录制器的只读状态接口还可能调用：
+
 - `get_gripper_position()`
 - `get_gripper_status()`
 
@@ -274,23 +264,8 @@ SpaceMouse 控制和停机主要会调用：
 
 ## 9. 当前实现里有意保留的限制
 
-这版桥接为了先把主链路跑通，保留了一个安全限制：
-
-- `moveL`
-- `moveJ`
-
-默认是禁用的。
-
-原因是当前 SpaceMouse 脚本里那组 reset pose 是按 UR 机械臂写的，不能直接拿去给 xArm 执行。桥接层只有在显式设置下面这个变量时才允许走这些动作：
-
-```bash
-XARM_ENABLE_RESET_MOTIONS=1
-```
-
-在没有把 reset pose 改成 xArm 安全点位之前，不建议打开。
-
-另外，`test.py` 当前没有提供关节运动方法，所以 `moveJ` 不会执行。即使开启
-`XARM_ENABLE_RESET_MOTIONS=1`，需要关节复位的流程仍会明确报错。
+队列遥操作脚本负责实时移动和夹爪控制，但没有实现旧 UR 脚本中的预设姿态
+Reset 流程。不要把旧 UR reset pose 直接用于 xArm。
 
 ## 10. 常见问题
 
@@ -299,8 +274,7 @@ XARM_ENABLE_RESET_MOTIONS=1
 先检查：
 
 - `ROBOT_IP` 是否正确
-- `XARM_CONTROLLER_PATH` 是否指向 `/home/pine/liangzi/PinedataXArm/test.py`
-- `test.py` 中是否仍然定义了 `XArmController`
+- `xarm_queue_teleop.py` 和 `spacemouse_queue_publisher.py` 是否存在
 - `xArm-Python-SDK` 目录是否存在
 - 机械臂是否和这台机器网络互通
 
@@ -311,12 +285,13 @@ XARM_ENABLE_RESET_MOTIONS=1
 - `spnav` 是否已安装到 `data_record_env`
 - SpaceMouse 是否被系统识别
 - 当前会话是否允许读取输入设备
+- tmux 左侧是否同时出现 `[SpaceMouse] queue server listening` 和
+  `[xArm] connected to SpaceMouse queue`
 
-### 为什么文档里还会出现 RTDE 这个名字
+### 为什么状态代码里还会出现 RTDE 这个名字
 
-因为这次改造保留了旧代码的函数名和调用习惯，方便最小代价接入。  
-也就是说，脚本表面上还是在调用 `RTDEControlInterface/RTDEReceiveInterface`
-风格的方法，但机器人对象实际由 `test.py` 中的 `XArmController` 创建。
+录制器为了兼容旧数据采集逻辑，仍保留 `RTDEReceiveInterface` 风格的方法名。
+SpaceMouse 控制已经不再使用这套接口，而是走新的队列脚本。
 
 ## 11. 推荐的最小启动命令
 
@@ -337,6 +312,7 @@ ROBOT_IP=<xarm_ip> ./run_recording_webapp.sh
 如果后面要继续扩展，优先看这几个文件：
 
 - [xarm_bridge.py](/home/pine/liangzi/PinedataXArm/pine_data/xarm_bridge.py)
+- [queue_teleop_supervisor.py](/home/pine/liangzi/PinedataXArm/pine_data/queue_teleop_supervisor.py)
+- [queue_spacemouse_publisher_bridge.py](/home/pine/liangzi/PinedataXArm/pine_data/queue_spacemouse_publisher_bridge.py)
 - [webapp/main.py](/home/pine/liangzi/PinedataXArm/pine_data/webapp/main.py)
 - [webapp/record_multi_camera_npy_web.py](/home/pine/liangzi/PinedataXArm/pine_data/webapp/record_multi_camera_npy_web.py)
-- [spacemouse_teleoperation_datafoundry/3DConnexion_UR5_Teleop_Gripper_pine_h5.py](/home/pine/liangzi/PinedataXArm/pine_data/spacemouse_teleoperation_datafoundry/3DConnexion_UR5_Teleop_Gripper_pine_h5.py)

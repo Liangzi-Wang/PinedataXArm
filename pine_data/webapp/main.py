@@ -1063,22 +1063,9 @@ class TmuxRecordingManager:
             "--camera-busy-reset" if config.camera_busy_reset else "--no-camera-busy-reset",
         ]
 
-        teleop_extra_args: list[str] = []
         camera_extra_args.extend([
             "--teleop-status-file",
             str(self.teleop_status_file),
-        ])
-        teleop_extra_args.extend([
-            "--instruction",
-            instruction,
-            "--control-mode",
-            "both",
-            "--status-file",
-            str(self.teleop_status_file),
-            "--subtask-segment-index",
-            str(config.subtask_segment_index),
-            "--subtask-reset-noise-xyz",
-            str(config.subtask_reset_noise_xyz_m),
         ])
         env = os.environ.copy()
         env.update({
@@ -1102,9 +1089,9 @@ class TmuxRecordingManager:
             "GRIPPER_PORT": str(config.gripper_port),
             "ALLOW_MISSING_ROBOT": "1" if config.allow_missing_robot else "0",
             "ALLOW_MISSING_GRIPPER": "1" if config.allow_missing_gripper else "0",
+            "TELEOP_STATUS_FILE": str(self.teleop_status_file),
             "CAMERA_EXTRA_ARGS": shlex.join(camera_extra_args),
         })
-        env["TELEOP_EXTRA_ARGS"] = shlex.join(teleop_extra_args)
 
         if robot_ip:
             env["ROBOT_IP"] = robot_ip
