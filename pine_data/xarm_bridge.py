@@ -104,11 +104,16 @@ class _SharedXArmClient:
 
     def set_mode(self, mode: int) -> None:
         with self.lock:
-            _require_code_ok(self.arm.motion_enable(True), "motion_enable")
-            if self.mode != mode:
+            arm_mode = getattr(self.arm, "mode", None)
+            arm_ready = bool(getattr(self.arm, "ready", False))
+            mode_changed = self.mode != mode or arm_mode != mode
+            if not arm_ready:
+                _require_code_ok(self.arm.motion_enable(True), "motion_enable")
+            if mode_changed:
                 _require_code_ok(self.arm.set_mode(mode), f"set_mode({mode})")
                 self.mode = mode
-            _require_code_ok(self.arm.set_state(0), "set_state(0)")
+            if not arm_ready or mode_changed:
+                _require_code_ok(self.arm.set_state(0), "set_state(0)")
 
     def stop_velocity(self) -> None:
         with self.lock:
@@ -229,7 +234,11 @@ class XArmReceiveInterface:
             code, state = self.client.arm.get_state()
         if int(code) != 0:
             return 0
-        return 7 if int(state) in {0, 1} else 0
+        # UR mode 7 means the robot can accept motion commands. xArm state 2 is
+        # an idle/sleeping state and wakes on the next command, so it must not
+        # block the SpaceMouse loop. States 3/4/5 are pause/stop states.
+        error_code = int(getattr(self.client.arm, "error_code", 0) or 0)
+        return 7 if error_code == 0 and int(state) in {0, 1, 2} else 0
 
     def getActualQ(self):
         with self.client.lock:
