@@ -651,7 +651,14 @@ class TmuxRecordingManager:
             if not config.allow_missing_gripper:
                 args.append("--no-allow-missing-gripper")
 
+        robot_backend = os.getenv("ROBOT_BACKEND", "xarm")
+        controller_path = os.getenv(
+            "XARM_CONTROLLER_PATH",
+            str((BASE_DIR.parent / "../test.py").resolve()),
+        )
         return (
+            f"export ROBOT_BACKEND={shlex.quote(robot_backend)} "
+            f"XARM_CONTROLLER_PATH={shlex.quote(controller_path)} && "
             f"source {shlex.quote(str(self.camera_env / 'bin' / 'activate'))} && "
             f"cd {shlex.quote(str(BASE_DIR))} && "
             f"python {shlex.join(args)}"
@@ -703,23 +710,33 @@ class TmuxRecordingManager:
     def _wait_for_recorder_ready(self, timeout_s: float = 20.0) -> None:
         deadline = time.time() + timeout_s
         last_status: dict[str, Any] = {}
+        recorder_was_running = False
         while time.time() < deadline:
+            recorder_running = self._camera_recorder_is_running()
+            recorder_was_running = recorder_was_running or recorder_running
             status_payload = self._load_status_file()
             if status_payload:
                 last_status = status_payload
-                if bool(status_payload.get("initialized")) and self._camera_recorder_is_running():
+                if bool(status_payload.get("initialized")) and recorder_running:
                     self.last_error = ""
                     return
                 message = str(status_payload.get("message") or "")
                 if "error" in message.lower() or status_payload.get("last_error"):
                     break
-            if not self._camera_recorder_is_running():
+            # tmux can briefly report the pane shell before the queued Python
+            # command starts. Only treat a stopped pane as a failure after the
+            # recorder process has actually been observed running.
+            if recorder_was_running and not recorder_running:
                 break
             time.sleep(0.25)
 
-        detail = str(last_status.get("last_error") or last_status.get("message") or "").strip()
+        detail = str(last_status.get("last_error") or "").strip()
         if not detail:
-            detail = self._camera_pane_tail() or "Camera recorder did not finish initializing."
+            detail = self._camera_pane_tail()
+        if not detail:
+            detail = str(last_status.get("message") or "").strip()
+        if not detail:
+            detail = "Camera recorder did not finish initializing."
         self.last_error = detail
         self.last_message = "Camera recorder failed to initialize."
         raise HTTPException(status_code=409, detail=detail)
@@ -1231,11 +1248,19 @@ class TmuxRecordingManager:
 
             self.status_file.parent.mkdir(parents=True, exist_ok=True)
             if self._session_exists():
-                self._restart_camera_recorder(config)
-                self._wait_for_preview_warmup()
-                time.sleep(0.5)
-                self.last_message = f"Reconfigured camera recorder in tmux session: {self.session_name}"
-                return self.status()
+                existing_status = self._load_status_file()
+                if bool(existing_status.get("initialized")):
+                    self._restart_camera_recorder(config)
+                    self._wait_for_preview_warmup()
+                    time.sleep(0.5)
+                    self.last_message = f"Reconfigured camera recorder in tmux session: {self.session_name}"
+                    return self.status()
+
+                proc = self._run_tmux("kill-session", "-t", self.session_name)
+                if proc.returncode != 0:
+                    detail = self._command_error(proc, "Could not remove stale tmux recording session.")
+                    self.last_error = detail
+                    raise HTTPException(status_code=500, detail=detail)
 
             if self.status_file.exists():
                 try:
@@ -1264,7 +1289,12 @@ class TmuxRecordingManager:
                 raise HTTPException(status_code=400, detail=detail)
 
             self.last_message = f"Started tmux recording session: {self.session_name}"
-            self._wait_for_recorder_ready()
+            try:
+                self._wait_for_recorder_ready()
+            except HTTPException:
+                if self._session_exists():
+                    self._run_tmux("kill-session", "-t", self.session_name)
+                raise
             self._wait_for_preview_warmup()
             return self.status()
 

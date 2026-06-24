@@ -99,12 +99,17 @@ require_dir "$CAMERA_ENV"
 require_file "$TELEOP_SCRIPT"
 require_file "$CAMERA_SCRIPT"
 
-teleop_cmd="source \"${TELEOP_ENV}/bin/activate\" && cd \"${PINE_DIR}\" && python \"${TELEOP_SCRIPT}\" --robot-ip \"${UR_ROBOT_IP}\" --root \"${RECORD_ROOT}\""
+printf -v robot_env_prefix \
+  'export ROBOT_BACKEND=%q XARM_CONTROLLER_PATH=%q; ' \
+  "$ROBOT_BACKEND" \
+  "$XARM_CONTROLLER_PATH"
+
+teleop_cmd="${robot_env_prefix}source \"${TELEOP_ENV}/bin/activate\" && cd \"${PINE_DIR}\" && python \"${TELEOP_SCRIPT}\" --robot-ip \"${UR_ROBOT_IP}\" --root \"${RECORD_ROOT}\""
 if [[ -n "$TELEOP_EXTRA_ARGS" ]]; then
   teleop_cmd+=" ${TELEOP_EXTRA_ARGS}"
 fi
 
-camera_cmd="source \"${CAMERA_ENV}/bin/activate\" && cd \"${WEBAPP_DIR}\" && python \"${CAMERA_SCRIPT}\" --root \"${RECORD_ROOT}\" --fps \"${FPS}\""
+camera_cmd="${robot_env_prefix}source \"${CAMERA_ENV}/bin/activate\" && cd \"${WEBAPP_DIR}\" && python \"${CAMERA_SCRIPT}\" --root \"${RECORD_ROOT}\" --fps \"${FPS}\""
 if [[ -n "$HAND_SERIAL" ]]; then
   camera_cmd+=" --hand-serial \"${HAND_SERIAL}\""
 fi
