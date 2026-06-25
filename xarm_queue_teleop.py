@@ -70,10 +70,10 @@ class QueueXArmTeleop:
         if XArmAPI is None:
             raise RuntimeError(f"xarm-python-sdk is not installed: {XARM_IMPORT_ERROR}")
         self.robot_ip = os.getenv("XARM_IP", os.getenv("ROBOT_IP", "192.168.1.206")).strip()
-        self.speed_mm_s = max(1.0, env_float("XARM_TELEOP_SPEED", 100.0))
-        self.angular_speed_deg_s = max(1.0, env_float("XARM_TELEOP_ANGULAR_SPEED", 30.0))
-        self.move_acc_mm_s2 = max(1.0, env_float("XARM_MOVE_ACCELERATION", 1000.0))
-        self.command_period_s = max(0.005, env_float("XARM_COMMAND_PERIOD_S", 0.02))
+        self.speed_mm_s = max(1.0, env_float("XARM_TELEOP_SPEED", 300.0))
+        self.angular_speed_deg_s = max(1.0, env_float("XARM_TELEOP_ANGULAR_SPEED", 45.0))
+        self.move_acc_mm_s2 = max(1.0, env_float("XARM_MOVE_ACCELERATION", 2000.0))
+        self.command_period_s = max(0.005, env_float("XARM_COMMAND_PERIOD_S", 0.01))
         self.max_step_mm = max(0.1, env_float("XARM_MAX_STEP_MM", self.speed_mm_s * self.command_period_s))
         self.max_rotation_step_deg = max(
             0.1,
@@ -82,7 +82,9 @@ class QueueXArmTeleop:
         self.spacemouse_timeout_s = max(0.0, env_float("SPACEMOUSE_CONTROL_TIMEOUT_S", 0.30))
         self.axis_mask = axis_mask(os.getenv("XARM_TRANSLATION_AXIS_MASK", "1,1,1"))
         self.rotation_axis_mask = axis_mask(os.getenv("XARM_ROTATION_AXIS_MASK", "1,1,1"))
-        self.control_mode = os.getenv("XARM_TELEOP_CONTROL_MODE", "position").strip().lower()
+        self.control_mode = os.getenv("XARM_TELEOP_CONTROL_MODE", "servo").strip().lower()
+        if self.control_mode not in {"servo", "position"}:
+            self.control_mode = "servo"
         self.enable_gripper_control = env_bool("ENABLE_SPACEMOUSE_GRIPPER_CONTROL", True)
         self.gripper_open_pos = env_int("XARM_GRIPPER_OPEN_POS", 850)
         self.gripper_close_pos = env_int("XARM_GRIPPER_CLOSE_POS", 0)
@@ -98,8 +100,13 @@ class QueueXArmTeleop:
         self.arm.motion_enable(enable=True)
         self.arm.set_mode(1 if self.control_mode == "servo" else 0)
         self.arm.set_state(0)
-        time.sleep(1.0)
+        time.sleep(0.1 if self.control_mode == "servo" else 1.0)
         print(f"[xArm] connected to {self.robot_ip}")
+        print(
+            f"[xArm] control={self.control_mode}, speed={self.speed_mm_s:.1f} mm/s, "
+            f"angular={self.angular_speed_deg_s:.1f} deg/s, "
+            f"command_hz={1.0 / self.command_period_s:.1f}"
+        )
 
         self.latest_command = {
             "timestamp": None,
@@ -206,6 +213,8 @@ class QueueXArmTeleop:
         self._teleop_target_pose = None
         if not self.stop_on_spacemouse_idle:
             return
+        if self.control_mode == "servo":
+            return
         try:
             self.arm.set_state(4)
             time.sleep(0.05)
@@ -263,7 +272,13 @@ class QueueXArmTeleop:
         target[3:6] = wrap_degrees(target[3:6] + rotation_step)
 
         if self.control_mode == "servo" and hasattr(self.arm, "set_servo_cartesian"):
-            code = self.arm.set_servo_cartesian(target.tolist(), speed=self.speed_mm_s, mvacc=self.move_acc_mm_s2)
+            code = self.arm.set_servo_cartesian(
+                target.tolist(),
+                speed=self.speed_mm_s,
+                mvacc=self.move_acc_mm_s2,
+                is_radian=False,
+            )
+            command_name = "set_servo_cartesian"
         else:
             code = self.arm.set_position(
                 *target.tolist(),
@@ -271,8 +286,9 @@ class QueueXArmTeleop:
                 mvacc=self.move_acc_mm_s2,
                 wait=False,
             )
+            command_name = "set_position"
         if code != 0:
-            print(f"[xArm] set_position failed, code={code}")
+            print(f"[xArm] {command_name} failed, code={code}")
             return
 
         self._spacemouse_motion_active = True
@@ -322,13 +338,13 @@ def main() -> None:
     parser.add_argument("--host", default=os.getenv("SPACEMOUSE_QUEUE_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=env_int("SPACEMOUSE_QUEUE_PORT", 8765))
     parser.add_argument("--authkey", default=os.getenv("SPACEMOUSE_QUEUE_AUTHKEY", "spacemouse"))
-    parser.add_argument("--poll-hz", type=float, default=max(1.0, env_float("XARM_QUEUE_POLL_HZ", 200.0)))
+    parser.add_argument("--poll-hz", type=float, default=max(1.0, env_float("XARM_QUEUE_POLL_HZ", 250.0)))
     args = parser.parse_args()
 
     manager = SpaceMouseQueueManager(address=(args.host, args.port), authkey=args.authkey.encode("utf-8"))
     manager.connect()
     status_queue = manager.get_status_queue()
-    print(f"[xArm] connected to SpaceMouse queue at {args.host}:{args.port}")
+    print(f"[xArm] connected to SpaceMouse queue at {args.host}:{args.port}, poll={args.poll_hz:.1f} Hz")
 
     teleop = QueueXArmTeleop()
     period_s = 1.0 / float(args.poll_hz)

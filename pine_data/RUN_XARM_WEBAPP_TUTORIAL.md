@@ -131,8 +131,14 @@ recordings/YYYYMMDD/<instruction>/camera_npy/YYYYMMDDHHMMSS/
 ROBOT_IP=<xarm_ip>
 ROBOT_BACKEND=xarm
 XARM_CONTROLLER_PATH=/home/pine/liangzi/PinedataXArm/test.py
-XARM_TELEOP_SPEED=150
-XARM_TELEOP_ANGULAR_SPEED=30
+XARM_TELEOP_SPEED=300
+XARM_TELEOP_ANGULAR_SPEED=45
+XARM_MOVE_ACCELERATION=2000
+XARM_COMMAND_PERIOD_S=0.01
+XARM_TELEOP_CONTROL_MODE=servo
+SPACEMOUSE_QUEUE_PUBLISH_HZ=200
+SPACEMOUSE_RESPONSE_EXPONENT=1.5
+XARM_QUEUE_POLL_HZ=250
 ```
 
 如果项目目录没有移动，通常只需要传 `ROBOT_IP`。
@@ -141,19 +147,25 @@ XARM_TELEOP_ANGULAR_SPEED=30
 
 - `XARM_TELEOP_SPEED` 是 SpaceMouse 最大线速度，单位 `mm/s`
 - `XARM_TELEOP_ANGULAR_SPEED` 是 SpaceMouse 最大旋转速度，单位 `deg/s`
+- `XARM_MOVE_ACCELERATION` 是笛卡尔运动加速度，单位 `mm/s²`
+- `XARM_COMMAND_PERIOD_S=0.01` 表示 servo 目标以 100 Hz 更新
+- `XARM_TELEOP_CONTROL_MODE=servo` 使用 `mode=1` 和 `set_servo_cartesian`
+- `SPACEMOUSE_QUEUE_PUBLISH_HZ` 是 SpaceMouse 状态发布频率
+- `SPACEMOUSE_RESPONSE_EXPONENT` 控制摇杆响应曲线；越小，中段响应越快
+- `XARM_QUEUE_POLL_HZ` 是 xArm consumer 的队列轮询频率
 
-例如把最大线速度提高到 `300 mm/s`：
+例如把最大线速度提高到 `500 mm/s`：
 
 ```bash
 cd /home/pine/liangzi/PinedataXArm/pine_data
-XARM_TELEOP_SPEED=300 ROBOT_IP=<xarm_ip> ./run_recording_webapp.sh
+XARM_TELEOP_SPEED=500 ROBOT_IP=<xarm_ip> ./run_recording_webapp.sh
 ```
 
 同时调整线速度和旋转速度：
 
 ```bash
 cd /home/pine/liangzi/PinedataXArm/pine_data
-XARM_TELEOP_SPEED=300 XARM_TELEOP_ANGULAR_SPEED=45 ROBOT_IP=<xarm_ip> ./run_recording_webapp.sh
+XARM_TELEOP_SPEED=500 XARM_TELEOP_ANGULAR_SPEED=60 ROBOT_IP=<xarm_ip> ./run_recording_webapp.sh
 ```
 
 修改速度后需要先关闭已有的录制 tmux session，再重新 Initialize，新的
@@ -217,12 +229,16 @@ SpaceMouse
 
 ### 8.1 实时运动控制接口
 
-`xarm_queue_teleop.py` 默认使用位置增量模式：
+`xarm_queue_teleop.py` 默认使用 servo 笛卡尔增量模式：
 
 - `get_position()`
-- `set_position(..., speed=..., mvacc=..., wait=False)`
-- `set_state(4)`：SpaceMouse 回到空闲时停止当前运动
-- `motion_enable(True)`、`set_mode(0)`、`set_state(0)`：停止后恢复可运动状态
+- `motion_enable(True)`
+- `set_mode(1)`
+- `set_state(0)`
+- `set_servo_cartesian(..., is_radian=False)`
+
+默认每 `0.01s` 发送一次 servo 目标。SpaceMouse 回到空闲时停止发送新目标，
+不会反复执行 `set_state(4)` 和重新使能。
 
 ### 8.2 机器人状态采样接口
 

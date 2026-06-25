@@ -44,8 +44,8 @@ def main() -> int:
     parser.add_argument("--host", default=os.getenv("SPACEMOUSE_QUEUE_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("SPACEMOUSE_QUEUE_PORT", "8765")))
     parser.add_argument("--authkey", default=os.getenv("SPACEMOUSE_QUEUE_AUTHKEY", "spacemouse"))
-    parser.add_argument("--publish-hz", type=float, default=float(os.getenv("SPACEMOUSE_QUEUE_PUBLISH_HZ", "100")))
-    parser.add_argument("--poll-hz", type=float, default=float(os.getenv("XARM_QUEUE_POLL_HZ", "200")))
+    parser.add_argument("--publish-hz", type=float, default=float(os.getenv("SPACEMOUSE_QUEUE_PUBLISH_HZ", "200")))
+    parser.add_argument("--poll-hz", type=float, default=float(os.getenv("XARM_QUEUE_POLL_HZ", "250")))
     parser.add_argument("--startup-timeout", type=float, default=5.0)
     args = parser.parse_args()
 
