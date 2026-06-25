@@ -1013,7 +1013,7 @@ class TmuxRecordingManager:
             "requested": True,
             "connected": connected,
             "available": connected,
-            "status": "streaming" if connected else "connected",
+            "status": "streaming" if connected else "disconnected",
             "text": "\n".join(lines) if lines else ("Waiting for SpaceMouse input..." if connected else "SpaceMouse process is not running."),
             "lines": lines,
             "command": command,
@@ -1236,7 +1236,7 @@ class TmuxRecordingManager:
             self.status_file.parent.mkdir(parents=True, exist_ok=True)
             if self._session_exists():
                 existing_status = self._load_status_file()
-                if bool(existing_status.get("initialized")):
+                if bool(existing_status.get("initialized")) and self._teleop_process_is_running():
                     self._restart_camera_recorder(config)
                     self._wait_for_preview_warmup()
                     time.sleep(0.5)

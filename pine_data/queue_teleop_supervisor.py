@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import socket
@@ -9,6 +10,49 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+
+def _select_queue_port(host: str, requested_port: int) -> int:
+    if host not in {"127.0.0.1", "localhost", "0.0.0.0"}:
+        return requested_port
+    bind_host = "127.0.0.1" if host == "localhost" else host
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((bind_host, requested_port))
+            return requested_port
+        except OSError:
+            probe.bind((bind_host, 0))
+            selected_port = int(probe.getsockname()[1])
+    print(
+        f"[QueueTeleop] queue port {requested_port} is busy; using {selected_port} instead.",
+        flush=True,
+    )
+    return selected_port
+
+
+def _write_failure_status(status_file: Path, message: str) -> None:
+    payload = {
+        "initialized": False,
+        "message": f"Queue teleop failed: {message}",
+        "last_error": message,
+        "spacemouse": {
+            "requested": True,
+            "enabled": True,
+            "connected": False,
+            "available": False,
+            "active": False,
+            "stale": True,
+            "status": "disconnected",
+            "latest_timestamp": time.time(),
+            "motion_state": [0.0] * 6,
+            "buttons": {"left": False, "right": False},
+            "last_error": message,
+        },
+    }
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = status_file.with_suffix(status_file.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp_path, status_file)
 
 
 def _wait_for_port(host: str, port: int, process: subprocess.Popen, timeout_s: float) -> None:
@@ -48,12 +92,14 @@ def main() -> int:
     parser.add_argument("--poll-hz", type=float, default=float(os.getenv("XARM_QUEUE_POLL_HZ", "250")))
     parser.add_argument("--startup-timeout", type=float, default=5.0)
     args = parser.parse_args()
+    args.port = _select_queue_port(args.host, args.port)
 
     base_dir = Path(__file__).resolve().parent
     bridge_path = base_dir / "queue_spacemouse_publisher_bridge.py"
     publisher_path = Path(args.publisher_script).expanduser().resolve()
     teleop_path = Path(args.teleop_script).expanduser().resolve()
     sdk_path = Path(args.sdk_path).expanduser().resolve()
+    status_path = Path(args.status_file).expanduser().resolve()
     for path, label in (
         (bridge_path, "publisher bridge"),
         (publisher_path, "SpaceMouse publisher"),
@@ -102,7 +148,7 @@ def main() -> int:
                 "--publisher-script",
                 str(publisher_path),
                 "--status-file",
-                str(Path(args.status_file).expanduser().resolve()),
+                str(status_path),
                 "--host",
                 args.host,
                 "--port",
@@ -142,9 +188,16 @@ def main() -> int:
             if publisher_code is not None:
                 raise RuntimeError(f"SpaceMouse publisher exited with code {publisher_code}")
             if teleop_code is not None:
-                return int(teleop_code)
+                if teleop_code != 0:
+                    raise RuntimeError(f"xArm queue teleop exited with code {teleop_code}")
+                return 0
             time.sleep(0.1)
         return 0
+    except Exception as exc:
+        _stop_process(teleop)
+        _stop_process(publisher)
+        _write_failure_status(status_path, str(exc))
+        raise
     finally:
         _stop_process(teleop)
         _stop_process(publisher)
