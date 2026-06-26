@@ -82,9 +82,9 @@ class QueueXArmTeleop:
         self.spacemouse_timeout_s = max(0.0, env_float("SPACEMOUSE_CONTROL_TIMEOUT_S", 0.30))
         self.axis_mask = axis_mask(os.getenv("XARM_TRANSLATION_AXIS_MASK", "1,1,1"))
         self.rotation_axis_mask = axis_mask(os.getenv("XARM_ROTATION_AXIS_MASK", "1,1,1"))
-        self.control_mode = os.getenv("XARM_TELEOP_CONTROL_MODE", "servo").strip().lower()
+        self.control_mode = os.getenv("XARM_TELEOP_CONTROL_MODE", "position").strip().lower()
         if self.control_mode not in {"servo", "position"}:
-            self.control_mode = "servo"
+            self.control_mode = "position"
         self.enable_gripper_control = env_bool("ENABLE_SPACEMOUSE_GRIPPER_CONTROL", True)
         self.gripper_open_pos = env_int("XARM_GRIPPER_OPEN_POS", 850)
         self.gripper_close_pos = env_int("XARM_GRIPPER_CLOSE_POS", 0)
