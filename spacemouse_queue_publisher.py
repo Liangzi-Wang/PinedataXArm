@@ -3,12 +3,14 @@ from __future__ import annotations
 import argparse
 import ctypes
 import ctypes.util
+import json
 import os
 import queue
 import threading
 import time
 from collections import defaultdict
 from multiprocessing.managers import BaseManager
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -417,39 +419,81 @@ def replace_latest_status(status: dict[str, Any]) -> None:
     _STATUS_QUEUE.put(status)
 
 
+def write_status_file(status_file: Path, status: dict[str, Any], message: str) -> None:
+    payload = {
+        "initialized": bool(status.get("connected")),
+        "message": message,
+        "last_error": str(status.get("last_error") or ""),
+        "spacemouse": status,
+    }
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = status_file.with_suffix(status_file.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp_path, status_file)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Publish SpaceMouse TCP commands through a process-shared queue.")
     parser.add_argument("--host", default=os.getenv("SPACEMOUSE_QUEUE_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=env_int("SPACEMOUSE_QUEUE_PORT", 8765))
     parser.add_argument("--authkey", default=os.getenv("SPACEMOUSE_QUEUE_AUTHKEY", "spacemouse"))
     parser.add_argument("--publish-hz", type=float, default=max(1.0, env_float("SPACEMOUSE_QUEUE_PUBLISH_HZ", 200.0)))
+    parser.add_argument("--status-file", default=os.getenv("SPACEMOUSE_STATUS_FILE", ""))
+    parser.add_argument("--status-hz", type=float, default=max(1.0, env_float("SPACEMOUSE_STATUS_FILE_HZ", 20.0)))
     args = parser.parse_args()
 
     manager = SpaceMouseQueueManager(address=(args.host, args.port), authkey=args.authkey.encode("utf-8"))
     server = manager.get_server()
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    print(f"[SpaceMouse] queue server listening on {args.host}:{args.port} at {args.publish_hz:.1f} Hz")
+    print(f"[SpaceMouse] queue server listening on {args.host}:{args.port} at {args.publish_hz:.1f} Hz", flush=True)
 
     spacemouse = SpaceMouseReader()
     period_s = 1.0 / float(args.publish_hz)
+    status_path = Path(args.status_file).expanduser().resolve() if args.status_file else None
+    status_period_s = 1.0 / max(1.0, float(args.status_hz))
+    last_status_write = 0.0
+    latest_status: dict[str, Any] = {}
     try:
         while True:
             status = spacemouse.status()
+            latest_status = status
             replace_latest_status(status)
+            now = time.monotonic()
+            if status_path is not None and now - last_status_write >= status_period_s:
+                write_status_file(status_path, status, "Queue SpaceMouse publisher running.")
+                last_status_write = now
             if status["active"]:
                 print(
                     "[SpaceMouse] "
                     f"{status['gesture_translation']}/{status['gesture_rotation']} "
                     f"motion={status['motion_state']}",
                     end="\r",
+                    flush=True,
                 )
             elif status["status"] != "idle":
-                print(f"[SpaceMouse] {status['status']}: {status['last_error']}", end="\r")
+                print(f"[SpaceMouse] {status['status']}: {status['last_error']}", end="\r", flush=True)
             time.sleep(period_s)
     except KeyboardInterrupt:
         print("\n[SpaceMouse] stopping.")
     finally:
+        if status_path is not None:
+            stopped_status = dict(latest_status) if latest_status else {
+                "requested": True,
+                "enabled": True,
+                "latest_timestamp": time.time(),
+                "motion_state": [0.0] * 6,
+                "buttons": {"left": False, "right": False},
+                "last_error": "",
+            }
+            stopped_status.update({
+                "connected": False,
+                "available": False,
+                "active": False,
+                "status": "disconnected",
+                "motion_state": [0.0] * 6,
+            })
+            write_status_file(status_path, stopped_status, "Queue SpaceMouse publisher stopped.")
         spacemouse.close()
 
 

@@ -95,13 +95,11 @@ def main() -> int:
     args.port = _select_queue_port(args.host, args.port)
 
     base_dir = Path(__file__).resolve().parent
-    bridge_path = base_dir / "queue_spacemouse_publisher_bridge.py"
     publisher_path = Path(args.publisher_script).expanduser().resolve()
     teleop_path = Path(args.teleop_script).expanduser().resolve()
     sdk_path = Path(args.sdk_path).expanduser().resolve()
     status_path = Path(args.status_file).expanduser().resolve()
     for path, label in (
-        (bridge_path, "publisher bridge"),
         (publisher_path, "SpaceMouse publisher"),
         (teleop_path, "xArm queue teleop"),
         (sdk_path, "xArm SDK"),
@@ -144,11 +142,7 @@ def main() -> int:
         publisher = subprocess.Popen(
             [
                 sys.executable,
-                str(bridge_path),
-                "--publisher-script",
                 str(publisher_path),
-                "--status-file",
-                str(status_path),
                 "--host",
                 args.host,
                 "--port",
@@ -157,6 +151,8 @@ def main() -> int:
                 args.authkey,
                 "--publish-hz",
                 str(args.publish_hz),
+                "--status-file",
+                str(status_path),
             ],
             env=env,
         )

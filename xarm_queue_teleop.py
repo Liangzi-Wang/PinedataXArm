@@ -360,6 +360,7 @@ def main() -> None:
                         f"step={command['step_mm']} rot={command['rotation_step_deg']} "
                         f"gesture={status.get('gesture_translation')}/{status.get('gesture_rotation')}",
                         end="\r",
+                        flush=True,
                     )
             else:
                 teleop.check_timeout()
