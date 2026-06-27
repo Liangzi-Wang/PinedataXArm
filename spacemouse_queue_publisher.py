@@ -420,14 +420,19 @@ def replace_latest_status(status: dict[str, Any]) -> None:
 
 
 def write_status_file(status_file: Path, status: dict[str, Any], message: str) -> None:
-    payload = {
+    try:
+        existing = json.loads(status_file.read_text(encoding="utf-8")) if status_file.is_file() else {}
+    except Exception:
+        existing = {}
+    payload = existing if isinstance(existing, dict) else {}
+    payload.update({
         "initialized": bool(status.get("connected")),
         "message": message,
         "last_error": str(status.get("last_error") or ""),
         "spacemouse": status,
-    }
+    })
     status_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = status_file.with_suffix(status_file.suffix + ".tmp")
+    tmp_path = status_file.with_suffix(status_file.suffix + f".{os.getpid()}.tmp")
     tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     os.replace(tmp_path, status_file)
 

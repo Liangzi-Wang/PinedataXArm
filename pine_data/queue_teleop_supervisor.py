@@ -50,7 +50,7 @@ def _write_failure_status(status_file: Path, message: str) -> None:
         },
     }
     status_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = status_file.with_suffix(status_file.suffix + ".tmp")
+    tmp_path = status_file.with_suffix(status_file.suffix + f".{os.getpid()}.tmp")
     tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     os.replace(tmp_path, status_file)
 
@@ -170,6 +170,8 @@ def main() -> int:
                 args.authkey,
                 "--poll-hz",
                 str(args.poll_hz),
+                "--status-file",
+                str(status_path),
             ],
             env=env,
         )

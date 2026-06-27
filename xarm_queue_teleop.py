@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import queue
 import time
 from multiprocessing.managers import BaseManager
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -66,7 +68,7 @@ SpaceMouseQueueManager.register("get_status_queue")
 
 
 class QueueXArmTeleop:
-    def __init__(self) -> None:
+    def __init__(self, status_file: Path | None = None) -> None:
         if XArmAPI is None:
             raise RuntimeError(f"xarm-python-sdk is not installed: {XARM_IMPORT_ERROR}")
         self.robot_ip = os.getenv("XARM_IP", os.getenv("ROBOT_IP", "192.168.1.206")).strip()
@@ -91,6 +93,8 @@ class QueueXArmTeleop:
         self.gripper_step = max(1, env_int("XARM_GRIPPER_STEP", 50))
         self.gripper_speed = max(1, env_int("XARM_GRIPPER_SPEED", 500))
         self.gripper_repeat_period_s = max(0.01, env_float("XARM_GRIPPER_REPEAT_PERIOD_S", 0.10))
+        self.status_file = status_file
+        self.status_period_s = 1.0 / max(1.0, env_float("XARM_STATUS_FILE_HZ", 50.0))
         self.stop_on_spacemouse_idle = env_bool("XARM_STOP_ON_SPACEMOUSE_IDLE", True)
         self.arm: Any = XArmAPI(self.robot_ip)
         if not self.arm.connected:
@@ -115,9 +119,12 @@ class QueueXArmTeleop:
             "source": "idle",
         }
         self.latest_gripper_position: float | None = None
+        self.latest_gripper_normalized_position: float | None = None
+        self._initialize_gripper_status()
         self._last_command_time = 0.0
         self._last_status_time = 0.0
         self._last_gripper_command_time = 0.0
+        self._last_status_write_time = 0.0
         self._prev_left_button = False
         self._prev_right_button = False
         self._spacemouse_motion_active = False
@@ -210,6 +217,23 @@ class QueueXArmTeleop:
                 pass
         return float("nan")
 
+    def gripper_normalized_position(self, position: float) -> float:
+        close_pos = float(self.gripper_close_pos)
+        open_pos = float(self.gripper_open_pos)
+        span = open_pos - close_pos
+        if abs(span) <= 1e-9:
+            return 0.0
+        normalized = (float(position) - close_pos) / span
+        return float(np.clip(normalized, 0.0, 1.0))
+
+    def _initialize_gripper_status(self) -> None:
+        if not self.enable_gripper_control:
+            return
+        position = self.gripper_position()
+        if np.isfinite(position):
+            self.latest_gripper_position = float(position)
+            self.latest_gripper_normalized_position = self.gripper_normalized_position(position)
+
     def clip_gripper_position(self, position: float) -> int:
         low = min(self.gripper_close_pos, self.gripper_open_pos)
         high = max(self.gripper_close_pos, self.gripper_open_pos)
@@ -221,6 +245,7 @@ class QueueXArmTeleop:
         clipped = self.clip_gripper_position(position)
         self.arm.set_gripper_position(clipped, speed=self.gripper_speed, wait=False)
         self.latest_gripper_position = float(clipped)
+        self.latest_gripper_normalized_position = self.gripper_normalized_position(clipped)
 
     def current_gripper_position_for_command(self) -> float:
         if self.latest_gripper_position is not None and np.isfinite(self.latest_gripper_position):
@@ -250,6 +275,72 @@ class QueueXArmTeleop:
                 self._last_gripper_command_time = now
         self._prev_left_button = left
         self._prev_right_button = right
+
+    def gripper_status_payload(self) -> dict[str, Any]:
+        connected = bool(self.enable_gripper_control)
+        available = self.latest_gripper_normalized_position is not None
+        return {
+            "requested": bool(self.enable_gripper_control),
+            "enabled": connected,
+            "connected": connected,
+            "available": available,
+            "status": "streaming" if available else "connected" if connected else "disconnected",
+            "ip": self.robot_ip,
+            "latest_timestamp": time.time(),
+            "latest_position": self.latest_gripper_normalized_position,
+            "raw_position": self.latest_gripper_position,
+            "open_position": self.gripper_open_pos,
+            "close_position": self.gripper_close_pos,
+            "source": "xarm_queue_teleop",
+        }
+
+    def robot_status_payload(self) -> dict[str, Any]:
+        command_timestamp = self.latest_command.get("timestamp")
+        return {
+            "requested": True,
+            "enabled": bool(self.arm.connected),
+            "connected": bool(self.arm.connected),
+            "available": command_timestamp is not None,
+            "status": "streaming" if command_timestamp is not None else "connected",
+            "ip": self.robot_ip,
+            "fps": round(1.0 / self.command_period_s, 3),
+            "latest": {
+                "timestamp": command_timestamp or time.time(),
+                "eef_pose_commanded": self.latest_command.get("target_pose", []),
+                "eef_twist_command": (
+                    self.latest_command.get("step_mm", [0.0, 0.0, 0.0])
+                    + self.latest_command.get("rotation_step_deg", [0.0, 0.0, 0.0])
+                ),
+            },
+        }
+
+    def write_status(self, *, force: bool = False) -> None:
+        if self.status_file is None:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_status_write_time < self.status_period_s:
+            return
+        try:
+            existing = (
+                json.loads(self.status_file.read_text(encoding="utf-8"))
+                if self.status_file.is_file()
+                else {}
+            )
+        except Exception:
+            existing = {}
+        payload = existing if isinstance(existing, dict) else {}
+        payload.update({
+            "initialized": True,
+            "message": "Queue xArm teleop running.",
+            "last_error": "",
+            "gripper": self.gripper_status_payload(),
+            "robot": self.robot_status_payload(),
+        })
+        self.status_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.status_file.with_suffix(self.status_file.suffix + f".{os.getpid()}.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp_path, self.status_file)
+        self._last_status_write_time = now
 
     def set_zero_command(self, source: str) -> None:
         self.latest_command = {
@@ -402,6 +493,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=env_int("SPACEMOUSE_QUEUE_PORT", 8765))
     parser.add_argument("--authkey", default=os.getenv("SPACEMOUSE_QUEUE_AUTHKEY", "spacemouse"))
     parser.add_argument("--poll-hz", type=float, default=max(1.0, env_float("XARM_QUEUE_POLL_HZ", 250.0)))
+    parser.add_argument("--status-file", default=os.getenv("TELEOP_STATUS_FILE", ""))
     args = parser.parse_args()
 
     manager = SpaceMouseQueueManager(address=(args.host, args.port), authkey=args.authkey.encode("utf-8"))
@@ -409,13 +501,16 @@ def main() -> None:
     status_queue = manager.get_status_queue()
     print(f"[xArm] connected to SpaceMouse queue at {args.host}:{args.port}, poll={args.poll_hz:.1f} Hz")
 
-    teleop = QueueXArmTeleop()
+    status_path = Path(args.status_file).expanduser().resolve() if args.status_file else None
+    teleop = QueueXArmTeleop(status_file=status_path)
+    teleop.write_status(force=True)
     period_s = 1.0 / float(args.poll_hz)
     try:
         while True:
             status = drain_latest(status_queue)
             if status is not None:
                 teleop.handle_status(status)
+                teleop.write_status()
                 command = teleop.latest_command
                 if command.get("source") == "spacemouse_queue":
                     print(
@@ -427,10 +522,12 @@ def main() -> None:
                     )
             else:
                 teleop.check_timeout()
+                teleop.write_status()
             time.sleep(period_s)
     except KeyboardInterrupt:
         print("\n[xArm] stopping.")
     finally:
+        teleop.write_status(force=True)
         teleop.close()
 
 
