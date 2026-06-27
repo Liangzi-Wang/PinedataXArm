@@ -82,9 +82,9 @@ class QueueXArmTeleop:
         self.spacemouse_timeout_s = max(0.0, env_float("SPACEMOUSE_CONTROL_TIMEOUT_S", 0.30))
         self.axis_mask = axis_mask(os.getenv("XARM_TRANSLATION_AXIS_MASK", "1,1,1"))
         self.rotation_axis_mask = axis_mask(os.getenv("XARM_ROTATION_AXIS_MASK", "1,1,1"))
-        self.control_mode = os.getenv("XARM_TELEOP_CONTROL_MODE", "position").strip().lower()
+        self.control_mode = os.getenv("XARM_TELEOP_CONTROL_MODE", "servo").strip().lower()
         if self.control_mode not in {"servo", "position"}:
-            self.control_mode = "position"
+            self.control_mode = "servo"
         self.enable_gripper_control = env_bool("ENABLE_SPACEMOUSE_GRIPPER_CONTROL", True)
         self.gripper_open_pos = env_int("XARM_GRIPPER_OPEN_POS", 850)
         self.gripper_close_pos = env_int("XARM_GRIPPER_CLOSE_POS", 0)
@@ -95,12 +95,11 @@ class QueueXArmTeleop:
         self.arm: Any = XArmAPI(self.robot_ip)
         if not self.arm.connected:
             raise RuntimeError(f"failed to connect to xArm at {self.robot_ip}")
+        self._last_motion_error_time = 0.0
+        self._last_servo_recover_time = 0.0
         self.arm.clean_error()
         self.arm.clean_warn()
-        self.arm.motion_enable(enable=True)
-        self.arm.set_mode(1 if self.control_mode == "servo" else 0)
-        self.arm.set_state(0)
-        time.sleep(0.1 if self.control_mode == "servo" else 1.0)
+        self.configure_motion_mode()
         print(f"[xArm] connected to {self.robot_ip}")
         print(
             f"[xArm] control={self.control_mode}, speed={self.speed_mm_s:.1f} mm/s, "
@@ -124,6 +123,64 @@ class QueueXArmTeleop:
         self._spacemouse_motion_active = False
         self._teleop_target_pose: np.ndarray | None = None
         self._last_motion_direction = np.zeros(6, dtype=np.float64)
+
+    def configure_motion_mode(self) -> None:
+        self.arm.motion_enable(enable=True)
+        if self.control_mode == "servo":
+            # Match the xArm SDK servo examples: enter a normal ready state
+            # first, then switch into servo mode before streaming targets.
+            self.arm.set_mode(0)
+            self.arm.set_state(0)
+            time.sleep(0.1)
+            self.arm.set_mode(1)
+            self.arm.set_state(0)
+            time.sleep(0.1)
+            self.seed_servo_pose()
+        else:
+            self.arm.set_mode(0)
+            self.arm.set_state(0)
+            time.sleep(1.0)
+
+    def seed_servo_pose(self) -> None:
+        pose, code = self.position()
+        if pose is None:
+            print(f"[xArm] failed to read position before servo seed, code={code}", flush=True)
+            return
+        code = self.arm.set_servo_cartesian(
+            pose.tolist(),
+            speed=self.speed_mm_s,
+            mvacc=self.move_acc_mm_s2,
+            is_radian=False,
+        )
+        if code != 0:
+            print(f"[xArm] set_servo_cartesian seed failed, code={code}; {self.arm_diagnostics()}", flush=True)
+
+    def arm_diagnostics(self) -> str:
+        parts = []
+        try:
+            parts.append(f"state={self.arm.get_state()}")
+        except Exception:
+            pass
+        try:
+            parts.append(f"err_warn={self.arm.get_err_warn_code()}")
+        except Exception:
+            pass
+        return ", ".join(parts) if parts else "diagnostics unavailable"
+
+    def recover_servo_mode(self) -> None:
+        if self.control_mode != "servo":
+            return
+        now = time.monotonic()
+        if now - self._last_servo_recover_time < 1.0:
+            return
+        self._last_servo_recover_time = now
+        try:
+            self.arm.clean_error()
+            self.arm.clean_warn()
+            self.configure_motion_mode()
+            print("[xArm] re-entered servo mode after command failure", flush=True)
+        except Exception as exc:
+            print(f"[xArm] servo recovery failed: {exc}", flush=True)
 
     def close(self) -> None:
         try:
@@ -288,7 +345,13 @@ class QueueXArmTeleop:
             )
             command_name = "set_position"
         if code != 0:
-            print(f"[xArm] {command_name} failed, code={code}")
+            self._spacemouse_motion_active = False
+            self._teleop_target_pose = None
+            now = time.monotonic()
+            if now - self._last_motion_error_time >= 0.5:
+                print(f"[xArm] {command_name} failed, code={code}; {self.arm_diagnostics()}", flush=True)
+                self._last_motion_error_time = now
+            self.recover_servo_mode()
             return
 
         self._spacemouse_motion_active = True
