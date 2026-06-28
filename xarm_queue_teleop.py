@@ -58,6 +58,39 @@ def axis_mask(raw: str) -> np.ndarray:
     return np.asarray(values, dtype=np.float64)
 
 
+def parse_axis_expr(expr: str) -> tuple[float, str]:
+    expr = expr.strip().lower()
+    sign = 1.0
+    if expr.startswith("+"):
+        expr = expr[1:].strip()
+    elif expr.startswith("-"):
+        sign = -1.0
+        expr = expr[1:].strip()
+    if not expr:
+        raise ValueError
+    return sign, expr
+
+
+def axis_map(raw: str | None, default: str) -> np.ndarray:
+    spec = (raw or default).strip()
+    source_index = {"x": 0, "y": 1, "z": 2}
+    matrix = np.zeros((3, 3), dtype=np.float64)
+    try:
+        expressions = [item.strip().lower() for item in spec.split(",")]
+        if len(expressions) != 3:
+            raise ValueError
+        for row, expr in enumerate(expressions):
+            sign, axis = parse_axis_expr(expr)
+            matrix[row, source_index[axis]] = sign
+        if not np.allclose(np.abs(matrix).sum(axis=0), 1.0) or not np.allclose(np.abs(matrix).sum(axis=1), 1.0):
+            raise ValueError
+        return matrix
+    except (KeyError, ValueError):
+        if raw is not None:
+            print(f"[xArm] ignoring invalid XARM_COMMAND_TRANSLATION_MAP={raw!r}; using {default!r}", flush=True)
+        return axis_map(None, default)
+
+
 def wrap_degrees(values: np.ndarray) -> np.ndarray:
     return (values + 180.0) % 360.0 - 180.0
 
@@ -86,6 +119,9 @@ class QueueXArmTeleop:
         self.spacemouse_timeout_s = max(0.0, env_float("SPACEMOUSE_CONTROL_TIMEOUT_S", 0.30))
         self.axis_mask = axis_mask(os.getenv("XARM_TRANSLATION_AXIS_MASK", "1,1,1"))
         self.rotation_axis_mask = axis_mask(os.getenv("XARM_ROTATION_AXIS_MASK", "1,1,1"))
+        self.command_translation_map_spec = os.getenv("XARM_COMMAND_TRANSLATION_MAP", "y,x,z").strip()
+        self.command_translation_map = axis_map(self.command_translation_map_spec, "y,x,z")
+        self.state_translation_map = np.linalg.inv(self.command_translation_map)
         self.control_mode = os.getenv("XARM_TELEOP_CONTROL_MODE", "servo").strip().lower()
         if self.control_mode not in {"servo", "position"}:
             self.control_mode = "servo"
@@ -115,6 +151,7 @@ class QueueXArmTeleop:
             f"angular={self.angular_speed_deg_s:.1f} deg/s, "
             f"command_hz={1.0 / self.command_period_s:.1f}"
         )
+        print(f"[xArm] command_translation_map={self.command_translation_map_spec}")
 
         self.latest_command = {
             "timestamp": None,
@@ -157,6 +194,17 @@ class QueueXArmTeleop:
             print(f"[xArm] reset pose unavailable, failed to read current pose, code={code}", flush=True)
             return None
         return pose.copy()
+
+    def command_translation(self, semantic_translation: np.ndarray) -> np.ndarray:
+        return self.command_translation_map @ semantic_translation
+
+    def semantic_translation(self, xarm_translation: np.ndarray) -> np.ndarray:
+        return self.state_translation_map @ xarm_translation
+
+    def semantic_pose(self, xarm_pose: np.ndarray) -> np.ndarray:
+        pose = xarm_pose.copy()
+        pose[:3] = self.semantic_translation(pose[:3])
+        return pose
 
     def configure_motion_mode(self) -> None:
         self.arm.motion_enable(enable=True)
@@ -430,8 +478,10 @@ class QueueXArmTeleop:
         self.latest_command = {
             "timestamp": time.time(),
             "step_mm": [0.0, 0.0, 0.0],
+            "xarm_step_mm": [0.0, 0.0, 0.0],
             "rotation_step_deg": [0.0, 0.0, 0.0],
             "target_pose": [],
+            "xarm_target_pose": [],
             "source": source,
         }
 
@@ -462,7 +512,8 @@ class QueueXArmTeleop:
             return
         self._last_command_time = now
 
-        translation = np.asarray(motion_state[:3], dtype=np.float64) * self.axis_mask
+        semantic_translation = np.asarray(motion_state[:3], dtype=np.float64) * self.axis_mask
+        translation = self.command_translation(semantic_translation)
         rotation = np.asarray(motion_state[3:], dtype=np.float64) * self.rotation_axis_mask
         translation_norm = float(np.linalg.norm(translation))
         rotation_norm = float(np.linalg.norm(rotation))
@@ -502,6 +553,8 @@ class QueueXArmTeleop:
             target = self._teleop_target_pose.copy()
         target[:3] += translation_step
         target[3:6] = wrap_degrees(target[3:6] + rotation_step)
+        semantic_translation_step = self.semantic_translation(translation_step)
+        semantic_target = self.semantic_pose(target)
 
         if self.control_mode == "servo" and hasattr(self.arm, "set_servo_cartesian"):
             code = self.arm.set_servo_cartesian(
@@ -534,9 +587,11 @@ class QueueXArmTeleop:
         self._last_motion_direction = motion_direction
         self.latest_command = {
             "timestamp": time.time(),
-            "step_mm": [round(float(value), 6) for value in translation_step.tolist()],
+            "step_mm": [round(float(value), 6) for value in semantic_translation_step.tolist()],
+            "xarm_step_mm": [round(float(value), 6) for value in translation_step.tolist()],
             "rotation_step_deg": [round(float(value), 6) for value in rotation_step.tolist()],
-            "target_pose": [round(float(value), 6) for value in target.tolist()],
+            "target_pose": [round(float(value), 6) for value in semantic_target.tolist()],
+            "xarm_target_pose": [round(float(value), 6) for value in target.tolist()],
             "source": "spacemouse_queue",
         }
 

@@ -9,6 +9,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Iterable
 
+import numpy as np
+
 
 def _env_bool(name: str, default: bool) -> bool:
     value = os.getenv(name)
@@ -76,6 +78,48 @@ def _as_float_list(values: Iterable[float], length: int | None = None) -> list[f
     if length is not None and len(items) < length:
         items.extend([0.0] * (length - len(items)))
     return items[:length] if length is not None else items
+
+
+def _parse_axis_expr(expr: str) -> tuple[float, str]:
+    expr = expr.strip().lower()
+    sign = 1.0
+    if expr.startswith("+"):
+        expr = expr[1:].strip()
+    elif expr.startswith("-"):
+        sign = -1.0
+        expr = expr[1:].strip()
+    if not expr:
+        raise ValueError
+    return sign, expr
+
+
+def _axis_map(raw: str | None, default: str) -> np.ndarray:
+    spec = (raw or default).strip()
+    source_index = {"x": 0, "y": 1, "z": 2}
+    matrix = np.zeros((3, 3), dtype=np.float64)
+    try:
+        expressions = [item.strip().lower() for item in spec.split(",")]
+        if len(expressions) != 3:
+            raise ValueError
+        for row, expr in enumerate(expressions):
+            sign, axis = _parse_axis_expr(expr)
+            matrix[row, source_index[axis]] = sign
+        if not np.allclose(np.abs(matrix).sum(axis=0), 1.0) or not np.allclose(np.abs(matrix).sum(axis=1), 1.0):
+            raise ValueError
+        return matrix
+    except (KeyError, ValueError):
+        if raw is not None:
+            print(f"[xArm bridge] ignoring invalid XARM_COMMAND_TRANSLATION_MAP={raw!r}; using {default!r}")
+        return _axis_map(None, default)
+
+
+_COMMAND_TRANSLATION_MAP = _axis_map(os.getenv("XARM_COMMAND_TRANSLATION_MAP", "y,x,z"), "y,x,z")
+_STATE_TRANSLATION_MAP = np.linalg.inv(_COMMAND_TRANSLATION_MAP)
+
+
+def _map_translation(values: Iterable[float], matrix: np.ndarray) -> list[float]:
+    vector = np.asarray(_as_float_list(values, 3), dtype=np.float64)
+    return [float(value) for value in (matrix @ vector).tolist()]
 
 
 def _require_code_ok(code: int, action: str) -> None:
@@ -156,7 +200,8 @@ class XArmControlInterface:
         del acceleration
         speeds = _as_float_list(speed, 6)
         # Existing UR teleop commands are m/s for XYZ and rad/s for rotation.
-        xarm_speeds = [speeds[0] * 1000.0, speeds[1] * 1000.0, speeds[2] * 1000.0, *speeds[3:]]
+        xarm_linear = _map_translation(speeds[:3], _COMMAND_TRANSLATION_MAP)
+        xarm_speeds = [xarm_linear[0] * 1000.0, xarm_linear[1] * 1000.0, xarm_linear[2] * 1000.0, *speeds[3:]]
         duration = float(time) if time and float(time) > 0 else float(os.getenv("XARM_SPEED_COMMAND_DURATION_S", "0.05"))
         with self.client.lock:
             self.client.set_mode(5)
@@ -194,10 +239,11 @@ class XArmControlInterface:
                 _result_value(self.client.arm.get_position(is_radian=True), "get_position"),
                 6,
             )
+            xarm_xyz_m = _map_translation(pose_values[:3], _COMMAND_TRANSLATION_MAP)
             moved = self.client.controller.move_relative(
-                dx=pose_values[0] * 1000.0 - current[0],
-                dy=pose_values[1] * 1000.0 - current[1],
-                dz=pose_values[2] * 1000.0 - current[2],
+                dx=xarm_xyz_m[0] * 1000.0 - current[0],
+                dy=xarm_xyz_m[1] * 1000.0 - current[1],
+                dz=xarm_xyz_m[2] * 1000.0 - current[2],
                 dr=math.degrees(pose_values[3] - current[3]),
                 dp=math.degrees(pose_values[4] - current[4]),
                 dyaw=math.degrees(pose_values[5] - current[5]),
@@ -249,7 +295,11 @@ class XArmReceiveInterface:
         with self.client.lock:
             pose = _result_value(self.client.arm.get_position(is_radian=True), "get_position")
         values = _as_float_list(pose, 6)
-        return [values[0] / 1000.0, values[1] / 1000.0, values[2] / 1000.0, *values[3:]]
+        semantic_xyz_m = _map_translation(
+            [values[0] / 1000.0, values[1] / 1000.0, values[2] / 1000.0],
+            _STATE_TRANSLATION_MAP,
+        )
+        return [*semantic_xyz_m, *values[3:]]
 
     def getActualTCPForce(self):
         with self.client.lock:
