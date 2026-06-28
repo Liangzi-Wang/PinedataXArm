@@ -132,9 +132,16 @@ def main() -> int:
 
     def read_commands() -> None:
         for raw_line in sys.stdin:
-            if raw_line.strip().lower() == "q":
+            command = raw_line.strip()
+            if command.lower() == "q":
                 stop_requested.set()
                 return
+            if teleop is not None and teleop.poll() is None and teleop.stdin is not None:
+                try:
+                    teleop.stdin.write(raw_line)
+                    teleop.stdin.flush()
+                except BrokenPipeError:
+                    pass
 
     threading.Thread(target=read_commands, daemon=True, name="queue-teleop-stdin").start()
 
@@ -174,6 +181,8 @@ def main() -> int:
                 str(status_path),
             ],
             env=env,
+            stdin=subprocess.PIPE,
+            text=True,
         )
         print(
             f"[QueueTeleop] publisher={publisher_path.name}, controller={teleop_path.name}, "

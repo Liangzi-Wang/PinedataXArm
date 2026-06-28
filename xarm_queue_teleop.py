@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import queue
+import sys
+import threading
 import time
 from multiprocessing.managers import BaseManager
 from pathlib import Path
@@ -93,6 +95,8 @@ class QueueXArmTeleop:
         self.gripper_step = max(1, env_int("XARM_GRIPPER_STEP", 50))
         self.gripper_speed = max(1, env_int("XARM_GRIPPER_SPEED", 500))
         self.gripper_repeat_period_s = max(0.01, env_float("XARM_GRIPPER_REPEAT_PERIOD_S", 0.10))
+        self.reset_speed_mm_s = max(1.0, env_float("XARM_RESET_SPEED", 200.0))
+        self.reset_acc_mm_s2 = max(1.0, env_float("XARM_RESET_ACCELERATION", self.move_acc_mm_s2))
         self.status_file = status_file
         self.status_period_s = 1.0 / max(1.0, env_float("XARM_STATUS_FILE_HZ", 50.0))
         self.stop_on_spacemouse_idle = env_bool("XARM_STOP_ON_SPACEMOUSE_IDLE", True)
@@ -104,6 +108,7 @@ class QueueXArmTeleop:
         self.arm.clean_error()
         self.arm.clean_warn()
         self.configure_motion_mode()
+        self.reset_pose = self.read_configured_reset_pose()
         print(f"[xArm] connected to {self.robot_ip}")
         print(
             f"[xArm] control={self.control_mode}, speed={self.speed_mm_s:.1f} mm/s, "
@@ -130,6 +135,28 @@ class QueueXArmTeleop:
         self._spacemouse_motion_active = False
         self._teleop_target_pose: np.ndarray | None = None
         self._last_motion_direction = np.zeros(6, dtype=np.float64)
+        self.subtask_reset = {
+            "active_segment_index": 0,
+            "noise_xyz_m": 0.0,
+            "last_reset_timestamp": None,
+            "status": "ready" if self.reset_pose is not None else "unavailable",
+        }
+
+    def read_configured_reset_pose(self) -> np.ndarray | None:
+        raw_pose = os.getenv("XARM_RESET_POSE", "").strip()
+        if raw_pose:
+            try:
+                values = [float(item.strip()) for item in raw_pose.split(",")]
+            except ValueError:
+                values = []
+            if len(values) >= 6:
+                return np.asarray(values[:6], dtype=np.float64)
+            print(f"[xArm] ignoring invalid XARM_RESET_POSE={raw_pose!r}; expected x,y,z,roll,pitch,yaw", flush=True)
+        pose, code = self.position()
+        if pose is None:
+            print(f"[xArm] reset pose unavailable, failed to read current pose, code={code}", flush=True)
+            return None
+        return pose.copy()
 
     def configure_motion_mode(self) -> None:
         self.arm.motion_enable(enable=True)
@@ -188,6 +215,62 @@ class QueueXArmTeleop:
             print("[xArm] re-entered servo mode after command failure", flush=True)
         except Exception as exc:
             print(f"[xArm] servo recovery failed: {exc}", flush=True)
+
+    def move_to_reset_pose(self, segment_index: int = 0, noise_xyz_m: float = 0.0) -> bool:
+        if self.reset_pose is None:
+            print("[xArm] reset requested, but no reset pose is available", flush=True)
+            self.subtask_reset.update({
+                "active_segment_index": int(segment_index),
+                "noise_xyz_m": float(noise_xyz_m),
+                "last_reset_timestamp": time.time(),
+                "status": "unavailable",
+            })
+            self.write_status(force=True)
+            return False
+
+        target = self.reset_pose.copy()
+        self.stop_motion("reset")
+        self._teleop_target_pose = None
+        self._last_motion_direction = np.zeros(6, dtype=np.float64)
+        self.subtask_reset.update({
+            "active_segment_index": int(segment_index),
+            "noise_xyz_m": float(noise_xyz_m),
+            "last_reset_timestamp": time.time(),
+            "status": "resetting",
+        })
+        self.write_status(force=True)
+
+        try:
+            self.arm.motion_enable(enable=True)
+            self.arm.set_mode(0)
+            self.arm.set_state(0)
+            time.sleep(0.1)
+            code = self.arm.set_position(
+                *target.tolist(),
+                speed=self.reset_speed_mm_s,
+                mvacc=self.reset_acc_mm_s2,
+                wait=True,
+            )
+            if code != 0:
+                print(f"[xArm] reset set_position failed, code={code}; {self.arm_diagnostics()}", flush=True)
+                self.subtask_reset["status"] = "failed"
+                self.write_status(force=True)
+                return False
+            if self.control_mode == "servo":
+                self.configure_motion_mode()
+            else:
+                self.arm.set_mode(0)
+                self.arm.set_state(0)
+            self.subtask_reset["status"] = "ready"
+            self.set_zero_command("reset")
+            self.write_status(force=True)
+            print(f"[xArm] reset complete: pose={[round(float(v), 3) for v in target.tolist()]}", flush=True)
+            return True
+        except Exception as exc:
+            self.subtask_reset["status"] = "failed"
+            self.write_status(force=True)
+            print(f"[xArm] reset failed: {exc}", flush=True)
+            return False
 
     def close(self) -> None:
         try:
@@ -335,6 +418,7 @@ class QueueXArmTeleop:
             "last_error": "",
             "gripper": self.gripper_status_payload(),
             "robot": self.robot_status_payload(),
+            "subtask_reset": self.subtask_reset,
         })
         self.status_file.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.status_file.with_suffix(self.status_file.suffix + f".{os.getpid()}.tmp")
@@ -504,9 +588,52 @@ def main() -> None:
     status_path = Path(args.status_file).expanduser().resolve() if args.status_file else None
     teleop = QueueXArmTeleop(status_file=status_path)
     teleop.write_status(force=True)
+    command_queue: queue.Queue[str] = queue.Queue()
+
+    def read_commands() -> None:
+        for raw_line in sys.stdin:
+            command_queue.put(raw_line.strip())
+
+    def handle_command(raw_command: str) -> bool:
+        parts = raw_command.strip().split()
+        if not parts:
+            return True
+        command = parts[0].lower()
+        if command == "q":
+            return False
+        if command == "r":
+            segment_index = 0
+            noise_xyz_m = 0.0
+            if len(parts) >= 2:
+                try:
+                    segment_index = int(parts[1])
+                except ValueError:
+                    segment_index = 0
+            if len(parts) >= 3:
+                try:
+                    noise_xyz_m = float(parts[2])
+                except ValueError:
+                    noise_xyz_m = 0.0
+            teleop.move_to_reset_pose(segment_index=segment_index, noise_xyz_m=noise_xyz_m)
+            return True
+        if command == "u":
+            teleop.stop_motion("clear")
+            teleop.write_status(force=True)
+            print("[xArm] cleared current SpaceMouse motion target", flush=True)
+        return True
+
+    threading.Thread(target=read_commands, daemon=True, name="xarm-teleop-stdin").start()
     period_s = 1.0 / float(args.poll_hz)
     try:
         while True:
+            while True:
+                try:
+                    raw_command = command_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if not handle_command(raw_command):
+                    raise KeyboardInterrupt
+
             status = drain_latest(status_queue)
             if status is not None:
                 teleop.handle_status(status)
