@@ -137,7 +137,7 @@ XARM_MOVE_ACCELERATION=2000
 XARM_COMMAND_PERIOD_S=0.01
 XARM_TELEOP_CONTROL_MODE=servo
 XARM_COMMAND_TRANSLATION_MAP=-y,x,z
-XARM_COMMAND_ROTATION_MAP=-x,-y,z
+XARM_COMMAND_ROTATION_MAP=x,y,z
 XARM_USE_BASE_RELATIVE_AA=1
 XARM_USE_TOOL_TWIST_AA=0
 XARM_TOOL_TWIST_AXIS=-z
@@ -156,7 +156,7 @@ XARM_QUEUE_POLL_HZ=250
 - `XARM_COMMAND_PERIOD_S=0.01` 表示 servo 目标以 100 Hz 更新
 - `XARM_TELEOP_CONTROL_MODE=servo` 使用 `mode=1`
 - `XARM_COMMAND_TRANSLATION_MAP=-y,x,z` 把 UR 风格动作的 X/Y 平移轴交换并修正方向后再发给 xArm；如果现场方向仍反，可以改成 `y,-x,z`、`y,x,z` 等
-- `XARM_COMMAND_ROTATION_MAP=-x,-y,z` 单独修正旋转轴：前后倾斜走前后轴，左右倾斜反向修正，twist 仍走 Z 轴
+- `XARM_COMMAND_ROTATION_MAP=x,y,z` 单独修正旋转轴：前后倾斜和左右倾斜方向与空间鼠标保持一致，twist 仍走 Z 轴
 - `XARM_USE_BASE_RELATIVE_AA=1` 使用 xArm base 坐标系下的相对 axis-angle servo，避免旋转坐标随 gripper 姿态变化
 - `XARM_USE_TOOL_TWIST_AA=0` 默认不使用 tool 坐标系 twist；只有明确想绕 gripper 自身坐标轴转时才打开
 - `XARM_TOOL_TWIST_AXIS=-z` 只在 `XARM_USE_TOOL_TWIST_AA=1` 时生效
