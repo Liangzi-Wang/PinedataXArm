@@ -126,6 +126,95 @@ def _map_vector(values: Iterable[float], matrix: np.ndarray) -> list[float]:
     return [float(value) for value in (matrix @ vector).tolist()]
 
 
+def _rotation_matrix_from_rotvec(rotvec: Iterable[float]) -> np.ndarray:
+    vector = np.asarray(_as_float_list(rotvec, 3), dtype=np.float64)
+    theta = float(np.linalg.norm(vector))
+    if theta < 1e-12:
+        return np.eye(3, dtype=np.float64)
+    axis = vector / theta
+    x, y, z = axis
+    skew = np.array(
+        [
+            [0.0, -z, y],
+            [z, 0.0, -x],
+            [-y, x, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    return np.eye(3, dtype=np.float64) + math.sin(theta) * skew + (1.0 - math.cos(theta)) * (skew @ skew)
+
+
+def _rotation_matrix_from_rpy(rpy: Iterable[float]) -> np.ndarray:
+    roll, pitch, yaw = _as_float_list(rpy, 3)
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]], dtype=np.float64)
+    ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]], dtype=np.float64)
+    rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    return rz @ ry @ rx
+
+
+def _rotvec_from_rotation_matrix(rotation: np.ndarray) -> list[float]:
+    cos_theta = max(-1.0, min(1.0, (float(np.trace(rotation)) - 1.0) / 2.0))
+    theta = math.acos(cos_theta)
+    if theta < 1e-12:
+        return [0.0, 0.0, 0.0]
+    if abs(math.pi - theta) < 1e-6:
+        axis = np.empty(3, dtype=np.float64)
+        axis[0] = math.sqrt(max(0.0, (rotation[0, 0] + 1.0) / 2.0))
+        axis[1] = math.sqrt(max(0.0, (rotation[1, 1] + 1.0) / 2.0))
+        axis[2] = math.sqrt(max(0.0, (rotation[2, 2] + 1.0) / 2.0))
+        axis[1] = math.copysign(axis[1], rotation[0, 1] + rotation[1, 0])
+        axis[2] = math.copysign(axis[2], rotation[0, 2] + rotation[2, 0])
+        norm = float(np.linalg.norm(axis))
+        if norm < 1e-12:
+            return [theta, 0.0, 0.0]
+        return [float(value) for value in (axis / norm * theta).tolist()]
+    scale = theta / (2.0 * math.sin(theta))
+    return [
+        float((rotation[2, 1] - rotation[1, 2]) * scale),
+        float((rotation[0, 2] - rotation[2, 0]) * scale),
+        float((rotation[1, 0] - rotation[0, 1]) * scale),
+    ]
+
+
+def _arm_default_is_radian(arm) -> bool:
+    if hasattr(arm, "_is_radian"):
+        return bool(getattr(arm, "_is_radian"))
+    internal = getattr(arm, "_arm", None)
+    if internal is not None and hasattr(internal, "_default_is_radian"):
+        return bool(getattr(internal, "_default_is_radian"))
+    return False
+
+
+def _tcp_offset_values(arm) -> list[float]:
+    try:
+        offset = getattr(arm, "tcp_offset")
+    except Exception:
+        offset = None
+    if offset is None:
+        offset = [0.0] * 6
+    return _as_float_list(offset, 6)
+
+
+def _wrist_pose_from_tcp_pose(
+    tcp_pose: Iterable[float],
+    tcp_rotation: np.ndarray,
+    tcp_offset: Iterable[float],
+    offset_is_radian: bool,
+) -> list[float]:
+    tcp_values = _as_float_list(tcp_pose, 6)
+    offset_values = _as_float_list(tcp_offset, 6)
+    offset_rpy = offset_values[3:6] if offset_is_radian else [math.radians(value) for value in offset_values[3:6]]
+    offset_rotation = _rotation_matrix_from_rpy(offset_rpy)
+    offset_translation = np.asarray(offset_values[:3], dtype=np.float64)
+
+    wrist_rotation = tcp_rotation @ offset_rotation.T
+    wrist_translation = np.asarray(tcp_values[:3], dtype=np.float64) - wrist_rotation @ offset_translation
+    return [*wrist_translation.tolist(), *_rotvec_from_rotation_matrix(wrist_rotation)]
+
+
 def _require_code_ok(code: int, action: str) -> None:
     if int(code) != 0:
         raise XArmBridgeError(f"{action} failed with xArm code {code}")
@@ -300,14 +389,23 @@ class XArmReceiveInterface:
         with self.client.lock:
             if hasattr(self.client.arm, "get_position_aa"):
                 pose = _result_value(self.client.arm.get_position_aa(is_radian=True), "get_position_aa")
+                values = _as_float_list(pose, 6)
+                tcp_rotation = _rotation_matrix_from_rotvec(values[3:6])
             else:
                 pose = _result_value(self.client.arm.get_position(is_radian=True), "get_position")
-        values = _as_float_list(pose, 6)
+                values = _as_float_list(pose, 6)
+                tcp_rotation = _rotation_matrix_from_rpy(values[3:6])
+            wrist_pose = _wrist_pose_from_tcp_pose(
+                values,
+                tcp_rotation,
+                _tcp_offset_values(self.client.arm),
+                _arm_default_is_radian(self.client.arm),
+            )
         semantic_xyz_m = _map_vector(
-            [values[0] / 1000.0, values[1] / 1000.0, values[2] / 1000.0],
+            [wrist_pose[0] / 1000.0, wrist_pose[1] / 1000.0, wrist_pose[2] / 1000.0],
             _STATE_TRANSLATION_MAP,
         )
-        semantic_rotvec = _map_vector(values[3:6], _STATE_ROTATION_MAP)
+        semantic_rotvec = _map_vector(wrist_pose[3:6], _STATE_ROTATION_MAP)
         return [*semantic_xyz_m, *semantic_rotvec]
 
     def getActualTCPForce(self):
