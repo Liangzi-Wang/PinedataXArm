@@ -137,7 +137,9 @@ XARM_MOVE_ACCELERATION=2000
 XARM_COMMAND_PERIOD_S=0.01
 XARM_TELEOP_CONTROL_MODE=servo
 XARM_COMMAND_TRANSLATION_MAP=-y,x,z
-XARM_USE_TOOL_TWIST_AA=1
+XARM_COMMAND_ROTATION_MAP=-y,x,z
+XARM_USE_BASE_RELATIVE_AA=1
+XARM_USE_TOOL_TWIST_AA=0
 XARM_TOOL_TWIST_AXIS=-z
 SPACEMOUSE_QUEUE_PUBLISH_HZ=200
 SPACEMOUSE_RESPONSE_EXPONENT=1.5
@@ -152,10 +154,12 @@ XARM_QUEUE_POLL_HZ=250
 - `XARM_TELEOP_ANGULAR_SPEED` 是 SpaceMouse 最大旋转速度，单位 `deg/s`
 - `XARM_MOVE_ACCELERATION` 是笛卡尔运动加速度，单位 `mm/s²`
 - `XARM_COMMAND_PERIOD_S=0.01` 表示 servo 目标以 100 Hz 更新
-- `XARM_TELEOP_CONTROL_MODE=servo` 使用 `mode=1` 和 `set_servo_cartesian`
+- `XARM_TELEOP_CONTROL_MODE=servo` 使用 `mode=1`
 - `XARM_COMMAND_TRANSLATION_MAP=-y,x,z` 把 UR 风格动作的 X/Y 平移轴交换并修正方向后再发给 xArm；如果现场方向仍反，可以改成 `y,-x,z`、`y,x,z` 等
-- `XARM_USE_TOOL_TWIST_AA=1` 让 SpaceMouse 扭转动作使用 xArm tool 坐标系下的轴角 servo，避免绕夹爪轴旋转时被 RPY 边界卡住
-- `XARM_TOOL_TWIST_AXIS=-z` 表示扭转默认绕 tool Z 轴反向；如果实机 tool 轴定义不同，可以改成 `z`、`x` 等
+- `XARM_COMMAND_ROTATION_MAP=-y,x,z` 让角速度和线速度使用同一套固定坐标变换，和 UR 的 `speedL` 动作语义对齐
+- `XARM_USE_BASE_RELATIVE_AA=1` 使用 xArm base 坐标系下的相对 axis-angle servo，避免旋转坐标随 gripper 姿态变化
+- `XARM_USE_TOOL_TWIST_AA=0` 默认不使用 tool 坐标系 twist；只有明确想绕 gripper 自身坐标轴转时才打开
+- `XARM_TOOL_TWIST_AXIS=-z` 只在 `XARM_USE_TOOL_TWIST_AA=1` 时生效
 - `SPACEMOUSE_QUEUE_PUBLISH_HZ` 是 SpaceMouse 状态发布频率
 - `SPACEMOUSE_RESPONSE_EXPONENT` 控制摇杆响应曲线；越小，中段响应越快
 - `XARM_QUEUE_POLL_HZ` 是 xArm consumer 的队列轮询频率
@@ -235,13 +239,14 @@ SpaceMouse
 
 ### 8.1 实时运动控制接口
 
-`xarm_queue_teleop.py` 默认使用 servo 笛卡尔增量模式：
+`xarm_queue_teleop.py` 默认使用 base 坐标系下的相对 axis-angle servo：
 
 - `get_position()`
+- `get_position_aa(is_radian=True)`
 - `motion_enable(True)`
 - `set_mode(1)`
 - `set_state(0)`
-- `set_servo_cartesian(..., is_radian=False)`
+- `set_servo_cartesian_aa(..., relative=True, is_tool_coord=False, is_radian=False)`
 
 默认每 `0.01s` 发送一次 servo 目标。SpaceMouse 回到空闲时停止发送新目标，
 不会反复执行 `set_state(4)` 和重新使能。

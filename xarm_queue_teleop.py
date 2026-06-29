@@ -135,7 +135,11 @@ class QueueXArmTeleop:
         self.command_translation_map_spec = os.getenv("XARM_COMMAND_TRANSLATION_MAP", "-y,x,z").strip()
         self.command_translation_map = axis_map(self.command_translation_map_spec, "-y,x,z")
         self.state_translation_map = np.linalg.inv(self.command_translation_map)
-        self.use_tool_twist_aa = env_bool("XARM_USE_TOOL_TWIST_AA", True)
+        self.command_rotation_map_spec = os.getenv("XARM_COMMAND_ROTATION_MAP", self.command_translation_map_spec).strip()
+        self.command_rotation_map = axis_map(self.command_rotation_map_spec, self.command_translation_map_spec)
+        self.state_rotation_map = np.linalg.inv(self.command_rotation_map)
+        self.use_base_relative_aa = env_bool("XARM_USE_BASE_RELATIVE_AA", True)
+        self.use_tool_twist_aa = env_bool("XARM_USE_TOOL_TWIST_AA", False)
         self.tool_twist_axis_spec = os.getenv("XARM_TOOL_TWIST_AXIS", "-z").strip()
         self.tool_twist_axis = axis_vector(self.tool_twist_axis_spec, "-z")
         self.control_mode = os.getenv("XARM_TELEOP_CONTROL_MODE", "servo").strip().lower()
@@ -168,13 +172,22 @@ class QueueXArmTeleop:
             f"command_hz={1.0 / self.command_period_s:.1f}"
         )
         print(f"[xArm] command_translation_map={self.command_translation_map_spec}")
-        print(f"[xArm] tool_twist_aa={int(self.use_tool_twist_aa)}, axis={self.tool_twist_axis_spec}")
+        print(
+            f"[xArm] command_rotation_map={self.command_rotation_map_spec}, "
+            f"base_relative_aa={int(self.use_base_relative_aa)}, "
+            f"tool_twist_aa={int(self.use_tool_twist_aa)}, axis={self.tool_twist_axis_spec}"
+        )
 
         self.latest_command = {
             "timestamp": None,
             "step_mm": [0.0, 0.0, 0.0],
+            "xarm_step_mm": [0.0, 0.0, 0.0],
             "rotation_step_deg": [0.0, 0.0, 0.0],
+            "xarm_rotation_step_deg": [0.0, 0.0, 0.0],
+            "twist_command": [0.0] * 6,
             "target_pose": [],
+            "xarm_target_pose": [],
+            "orientation_command_mode": "",
             "source": "idle",
         }
         self.latest_gripper_position: float | None = None
@@ -218,9 +231,21 @@ class QueueXArmTeleop:
     def semantic_translation(self, xarm_translation: np.ndarray) -> np.ndarray:
         return self.state_translation_map @ xarm_translation
 
+    def command_rotation(self, semantic_rotation: np.ndarray) -> np.ndarray:
+        return self.command_rotation_map @ semantic_rotation
+
+    def semantic_rotation(self, xarm_rotation: np.ndarray) -> np.ndarray:
+        return self.state_rotation_map @ xarm_rotation
+
     def semantic_pose(self, xarm_pose: np.ndarray) -> np.ndarray:
         pose = xarm_pose.copy()
         pose[:3] = self.semantic_translation(pose[:3])
+        return pose
+
+    def semantic_pose_aa(self, xarm_pose_aa: np.ndarray) -> np.ndarray:
+        pose = xarm_pose_aa.copy()
+        pose[:3] = self.semantic_translation(pose[:3]) / 1000.0
+        pose[3:6] = self.semantic_rotation(pose[3:6])
         return pose
 
     def configure_motion_mode(self) -> None:
@@ -352,6 +377,14 @@ class QueueXArmTeleop:
             return None, int(code)
         return np.asarray(pose, dtype=np.float64), 0
 
+    def position_aa(self) -> tuple[np.ndarray | None, int]:
+        if not hasattr(self.arm, "get_position_aa"):
+            return None, -1
+        code, pose = self.arm.get_position_aa(is_radian=True)
+        if code != 0:
+            return None, int(code)
+        return np.asarray(pose, dtype=np.float64), 0
+
     def gripper_position(self) -> float:
         for method in ("get_gripper_position", "get_gripper_pos"):
             if not hasattr(self.arm, method):
@@ -455,10 +488,7 @@ class QueueXArmTeleop:
             "latest": {
                 "timestamp": command_timestamp or time.time(),
                 "eef_pose_commanded": self.latest_command.get("target_pose", []),
-                "eef_twist_command": (
-                    self.latest_command.get("step_mm", [0.0, 0.0, 0.0])
-                    + self.latest_command.get("rotation_step_deg", [0.0, 0.0, 0.0])
-                ),
+                "eef_twist_command": self.latest_command.get("twist_command", [0.0] * 6),
             },
         }
 
@@ -497,6 +527,8 @@ class QueueXArmTeleop:
             "step_mm": [0.0, 0.0, 0.0],
             "xarm_step_mm": [0.0, 0.0, 0.0],
             "rotation_step_deg": [0.0, 0.0, 0.0],
+            "xarm_rotation_step_deg": [0.0, 0.0, 0.0],
+            "twist_command": [0.0] * 6,
             "target_pose": [],
             "xarm_target_pose": [],
             "orientation_command_mode": "",
@@ -531,13 +563,17 @@ class QueueXArmTeleop:
         self._last_command_time = now
 
         semantic_translation = np.asarray(motion_state[:3], dtype=np.float64) * self.axis_mask
-        translation = self.command_translation(semantic_translation)
-        rotation = np.asarray(motion_state[3:], dtype=np.float64) * self.rotation_axis_mask
-        translation_norm = float(np.linalg.norm(translation))
-        rotation_norm = float(np.linalg.norm(rotation))
-        if translation_norm <= 1e-9 and rotation_norm <= 1e-9:
+        semantic_rotation = np.asarray(motion_state[3:], dtype=np.float64) * self.rotation_axis_mask
+        semantic_translation_norm = float(np.linalg.norm(semantic_translation))
+        semantic_rotation_norm = float(np.linalg.norm(semantic_rotation))
+        if semantic_translation_norm <= 1e-9 and semantic_rotation_norm <= 1e-9:
             self.stop_motion("idle")
             return
+
+        translation = self.command_translation(semantic_translation)
+        rotation = self.command_rotation(semantic_rotation)
+        translation_norm = float(np.linalg.norm(translation))
+        rotation_norm = float(np.linalg.norm(rotation))
 
         motion_direction = np.zeros(6, dtype=np.float64)
         if translation_norm > 1e-9:
@@ -547,21 +583,34 @@ class QueueXArmTeleop:
         if bool(np.any((motion_direction * self._last_motion_direction) < -0.2)):
             self._teleop_target_pose = None
 
-        translation_step = np.zeros(3, dtype=np.float64)
-        if translation_norm > 1e-9:
-            translation_direction = translation / translation_norm
-            translation_magnitude = min(translation_norm, 1.0)
-            translation_step = translation_direction * translation_magnitude * self.speed_mm_s * self.command_period_s
-            step_norm = float(np.linalg.norm(translation_step))
+        semantic_translation_step = np.zeros(3, dtype=np.float64)
+        semantic_translation_velocity = np.zeros(3, dtype=np.float64)
+        if semantic_translation_norm > 1e-9:
+            translation_direction = semantic_translation / semantic_translation_norm
+            translation_magnitude = min(semantic_translation_norm, 1.0)
+            semantic_translation_velocity = translation_direction * translation_magnitude * (self.speed_mm_s / 1000.0)
+            semantic_translation_step = semantic_translation_velocity * 1000.0 * self.command_period_s
+            step_norm = float(np.linalg.norm(semantic_translation_step))
             if step_norm > self.max_step_mm:
-                translation_step = translation_step / step_norm * self.max_step_mm
+                semantic_translation_step = semantic_translation_step / step_norm * self.max_step_mm
+                semantic_translation_velocity = semantic_translation_step / (1000.0 * self.command_period_s)
+        translation_step = self.command_translation(semantic_translation_step)
 
-        rotation_step = np.zeros(3, dtype=np.float64)
-        if rotation_norm > 1e-9:
-            rotation_step = np.clip(rotation, -1.0, 1.0) * self.angular_speed_deg_s * self.command_period_s
-            rotation_step = np.clip(rotation_step, -self.max_rotation_step_deg, self.max_rotation_step_deg)
+        semantic_rotation_step = np.zeros(3, dtype=np.float64)
+        semantic_rotation_velocity = np.zeros(3, dtype=np.float64)
+        if semantic_rotation_norm > 1e-9:
+            semantic_rotation_velocity = np.clip(semantic_rotation, -1.0, 1.0) * np.deg2rad(self.angular_speed_deg_s)
+            semantic_rotation_step = np.rad2deg(semantic_rotation_velocity * self.command_period_s)
+            semantic_rotation_step = np.clip(
+                semantic_rotation_step,
+                -self.max_rotation_step_deg,
+                self.max_rotation_step_deg,
+            )
+            semantic_rotation_velocity = np.deg2rad(semantic_rotation_step) / self.command_period_s
+        rotation_step = self.command_rotation(semantic_rotation_step)
         use_tool_twist_aa = (
-            self.use_tool_twist_aa
+            not self.use_base_relative_aa
+            and self.use_tool_twist_aa
             and self.control_mode == "servo"
             and hasattr(self.arm, "set_servo_cartesian_aa")
             and translation_norm <= 1e-9
@@ -579,11 +628,35 @@ class QueueXArmTeleop:
             target = self._teleop_target_pose.copy()
         target[:3] += translation_step
         target[3:6] = wrap_degrees(target[3:6] + rotation_step)
-        semantic_translation_step = self.semantic_translation(translation_step)
         semantic_target = self.semantic_pose(target)
+        semantic_target[:3] /= 1000.0
+        semantic_target[3:6] = np.deg2rad(semantic_target[3:6])
+        pose_aa, _ = self.position_aa()
+        if pose_aa is not None:
+            target_aa = pose_aa.copy()
+            target_aa[:3] += translation_step
+            target_aa[3:6] += np.deg2rad(rotation_step)
+            semantic_target = self.semantic_pose_aa(target_aa)
 
+        used_base_relative_aa = False
         used_tool_twist_aa = False
-        if use_tool_twist_aa:
+        if (
+            self.use_base_relative_aa
+            and self.control_mode == "servo"
+            and hasattr(self.arm, "set_servo_cartesian_aa")
+        ):
+            code = self.arm.set_servo_cartesian_aa(
+                [*translation_step.tolist(), *rotation_step.tolist()],
+                speed=self.speed_mm_s,
+                mvacc=self.move_acc_mm_s2,
+                is_radian=False,
+                is_tool_coord=False,
+                relative=True,
+                wait=False,
+            )
+            command_name = "set_servo_cartesian_aa(base_relative)"
+            used_base_relative_aa = code == 0
+        elif use_tool_twist_aa:
             axis_angle = self.tool_twist_axis * rotation_step[2]
             code = self.arm.set_servo_cartesian_aa(
                 [0.0, 0.0, 0.0, *axis_angle.tolist()],
@@ -600,7 +673,7 @@ class QueueXArmTeleop:
             code = -1
             command_name = ""
 
-        if not used_tool_twist_aa and self.control_mode == "servo" and hasattr(self.arm, "set_servo_cartesian"):
+        if not (used_base_relative_aa or used_tool_twist_aa) and self.control_mode == "servo" and hasattr(self.arm, "set_servo_cartesian"):
             code = self.arm.set_servo_cartesian(
                 target.tolist(),
                 speed=self.speed_mm_s,
@@ -608,7 +681,7 @@ class QueueXArmTeleop:
                 is_radian=False,
             )
             command_name = "set_servo_cartesian"
-        elif not used_tool_twist_aa:
+        elif not (used_base_relative_aa or used_tool_twist_aa):
             code = self.arm.set_position(
                 *target.tolist(),
                 speed=self.speed_mm_s,
@@ -627,16 +700,23 @@ class QueueXArmTeleop:
             return
 
         self._spacemouse_motion_active = True
-        self._teleop_target_pose = None if used_tool_twist_aa else target.copy()
+        self._teleop_target_pose = target.copy()
         self._last_motion_direction = motion_direction
         self.latest_command = {
             "timestamp": time.time(),
             "step_mm": [round(float(value), 6) for value in semantic_translation_step.tolist()],
             "xarm_step_mm": [round(float(value), 6) for value in translation_step.tolist()],
-            "rotation_step_deg": [round(float(value), 6) for value in rotation_step.tolist()],
+            "rotation_step_deg": [round(float(value), 6) for value in semantic_rotation_step.tolist()],
+            "xarm_rotation_step_deg": [round(float(value), 6) for value in rotation_step.tolist()],
+            "twist_command": [
+                *[round(float(value), 6) for value in semantic_translation_velocity.tolist()],
+                *[round(float(value), 6) for value in semantic_rotation_velocity.tolist()],
+            ],
             "target_pose": [round(float(value), 6) for value in semantic_target.tolist()],
             "xarm_target_pose": [round(float(value), 6) for value in target.tolist()],
-            "orientation_command_mode": "tool_axis_angle" if used_tool_twist_aa else "rpy_target",
+            "orientation_command_mode": (
+                "base_axis_angle" if used_base_relative_aa else "tool_axis_angle" if used_tool_twist_aa else "rpy_target"
+            ),
             "source": "spacemouse_queue",
         }
 

@@ -113,11 +113,15 @@ def _axis_map(raw: str | None, default: str) -> np.ndarray:
         return _axis_map(None, default)
 
 
-_COMMAND_TRANSLATION_MAP = _axis_map(os.getenv("XARM_COMMAND_TRANSLATION_MAP", "-y,x,z"), "-y,x,z")
+_COMMAND_TRANSLATION_MAP_SPEC = os.getenv("XARM_COMMAND_TRANSLATION_MAP", "-y,x,z")
+_COMMAND_TRANSLATION_MAP = _axis_map(_COMMAND_TRANSLATION_MAP_SPEC, "-y,x,z")
 _STATE_TRANSLATION_MAP = np.linalg.inv(_COMMAND_TRANSLATION_MAP)
+_COMMAND_ROTATION_MAP_SPEC = os.getenv("XARM_COMMAND_ROTATION_MAP", _COMMAND_TRANSLATION_MAP_SPEC)
+_COMMAND_ROTATION_MAP = _axis_map(_COMMAND_ROTATION_MAP_SPEC, _COMMAND_TRANSLATION_MAP_SPEC)
+_STATE_ROTATION_MAP = np.linalg.inv(_COMMAND_ROTATION_MAP)
 
 
-def _map_translation(values: Iterable[float], matrix: np.ndarray) -> list[float]:
+def _map_vector(values: Iterable[float], matrix: np.ndarray) -> list[float]:
     vector = np.asarray(_as_float_list(values, 3), dtype=np.float64)
     return [float(value) for value in (matrix @ vector).tolist()]
 
@@ -200,8 +204,9 @@ class XArmControlInterface:
         del acceleration
         speeds = _as_float_list(speed, 6)
         # Existing UR teleop commands are m/s for XYZ and rad/s for rotation.
-        xarm_linear = _map_translation(speeds[:3], _COMMAND_TRANSLATION_MAP)
-        xarm_speeds = [xarm_linear[0] * 1000.0, xarm_linear[1] * 1000.0, xarm_linear[2] * 1000.0, *speeds[3:]]
+        xarm_linear = _map_vector(speeds[:3], _COMMAND_TRANSLATION_MAP)
+        xarm_angular = _map_vector(speeds[3:6], _COMMAND_ROTATION_MAP)
+        xarm_speeds = [xarm_linear[0] * 1000.0, xarm_linear[1] * 1000.0, xarm_linear[2] * 1000.0, *xarm_angular]
         duration = float(time) if time and float(time) > 0 else float(os.getenv("XARM_SPEED_COMMAND_DURATION_S", "0.05"))
         with self.client.lock:
             self.client.set_mode(5)
@@ -239,7 +244,7 @@ class XArmControlInterface:
                 _result_value(self.client.arm.get_position(is_radian=True), "get_position"),
                 6,
             )
-            xarm_xyz_m = _map_translation(pose_values[:3], _COMMAND_TRANSLATION_MAP)
+            xarm_xyz_m = _map_vector(pose_values[:3], _COMMAND_TRANSLATION_MAP)
             moved = self.client.controller.move_relative(
                 dx=xarm_xyz_m[0] * 1000.0 - current[0],
                 dy=xarm_xyz_m[1] * 1000.0 - current[1],
@@ -293,13 +298,17 @@ class XArmReceiveInterface:
 
     def getActualTCPPose(self):
         with self.client.lock:
-            pose = _result_value(self.client.arm.get_position(is_radian=True), "get_position")
+            if hasattr(self.client.arm, "get_position_aa"):
+                pose = _result_value(self.client.arm.get_position_aa(is_radian=True), "get_position_aa")
+            else:
+                pose = _result_value(self.client.arm.get_position(is_radian=True), "get_position")
         values = _as_float_list(pose, 6)
-        semantic_xyz_m = _map_translation(
+        semantic_xyz_m = _map_vector(
             [values[0] / 1000.0, values[1] / 1000.0, values[2] / 1000.0],
             _STATE_TRANSLATION_MAP,
         )
-        return [*semantic_xyz_m, *values[3:]]
+        semantic_rotvec = _map_vector(values[3:6], _STATE_ROTATION_MAP)
+        return [*semantic_xyz_m, *semantic_rotvec]
 
     def getActualTCPForce(self):
         with self.client.lock:
