@@ -69,14 +69,20 @@ FRAME_WAIT_TIMEOUT_MS = 100
 STREAM_STALE_AFTER_S = 1.0
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 RGB_CANDIDATES = [
+    (848, 480, 15),
+    (848, 480, 30),
+    (848, 480, 5),
+    (1280, 720, 15),
+    (1280, 720, 30),
     (640, 480, 15),
     (640, 480, 30),
+    (640, 480, 5),
     (480, 270, 15),
     (480, 270, 5),
-    (640, 480, 5),
     (424, 240, 15),
     (424, 240, 5),
 ]
+RGB_FPS_FALLBACKS = (30, 15, 5)
 
 
 def _sanitize_instruction(raw_instruction: str) -> str:
@@ -1050,7 +1056,10 @@ class CameraRecorder():
     @staticmethod
     def _camera_profile_candidates(width: int, height: int, fps: int) -> list[tuple[int, int, int]]:
         requested = (int(width), int(height), int(fps))
-        candidates = [requested, *RGB_CANDIDATES]
+        candidates = [requested]
+        for fallback_fps in RGB_FPS_FALLBACKS:
+            candidates.append((requested[0], requested[1], fallback_fps))
+        candidates.extend(RGB_CANDIDATES)
         unique: list[tuple[int, int, int]] = []
         seen: set[tuple[int, int, int]] = set()
         for item in candidates:
@@ -1099,9 +1108,25 @@ class CameraRecorder():
     ):
         """Start RealSense pipeline with retry and profile fallback."""
         supported = self._supported_rgb_modes(serial)
+        requested = (int(color_width), int(color_height), int(fps))
         candidates = self._camera_profile_candidates(color_width, color_height, fps)
         if supported:
             candidates = [item for item in candidates if item in supported]
+            if requested not in candidates:
+                same_resolution = sorted(
+                    item for item in candidates if item[0] == requested[0] and item[1] == requested[1]
+                )
+                if same_resolution:
+                    print(
+                        f"WARNING: {camera_role} camera ({serial}) does not advertise requested "
+                        f"profile {requested[0]}x{requested[1]}@{requested[2]}; trying same resolution "
+                        f"with available fps: {same_resolution}"
+                    )
+                else:
+                    print(
+                        f"WARNING: {camera_role} camera ({serial}) does not advertise requested "
+                        f"resolution {requested[0]}x{requested[1]}@{requested[2]}; falling back to {candidates[:5]}"
+                    )
 
         if not candidates:
             msg = (
