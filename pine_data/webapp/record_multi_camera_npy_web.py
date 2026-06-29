@@ -68,6 +68,8 @@ record_root: Optional[Path] = None
 FRAME_WAIT_TIMEOUT_MS = 100
 STREAM_STALE_AFTER_S = 1.0
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
+SAVED_FRAME_WIDTH = 640
+SAVED_FRAME_HEIGHT = 480
 RGB_CANDIDATES = [
     (848, 480, 15),
     (848, 480, 30),
@@ -407,6 +409,8 @@ class CameraRecorder():
         self.depth_width_ext = self.width_ext
         self.depth_height_ext = self.height_ext
 
+        self.saved_frame_width = SAVED_FRAME_WIDTH
+        self.saved_frame_height = SAVED_FRAME_HEIGHT
         self.capture_fps = capture_fps
         self.hand_serial_override = hand_serial_override
         self.wrist_serial_override = wrist_serial_override
@@ -499,8 +503,8 @@ class CameraRecorder():
                     {
                         "key": "rgb_hand",
                         "filename": "rgb_hand.mp4",
-                        "width": self.width_hand,
-                        "height": self.height_hand,
+                        "width": self.saved_frame_width,
+                        "height": self.saved_frame_height,
                         "fps": self.fps_hand,
                         "input_pixel_format": "rgb24",
                         "codec": "libx264",
@@ -510,8 +514,8 @@ class CameraRecorder():
                     {
                         "key": "depth_hand",
                         "filename": "depth_hand_raw.mkv",
-                        "width": self.depth_width_hand,
-                        "height": self.depth_height_hand,
+                        "width": self.saved_frame_width,
+                        "height": self.saved_frame_height,
                         "fps": self.fps_hand,
                         "input_pixel_format": "gray16le",
                         "codec": "ffv1",
@@ -525,8 +529,8 @@ class CameraRecorder():
                     {
                         "key": "rgb_wrist",
                         "filename": "rgb_wrist.mp4",
-                        "width": self.width_wrist,
-                        "height": self.height_wrist,
+                        "width": self.saved_frame_width,
+                        "height": self.saved_frame_height,
                         "fps": self.fps_wrist,
                         "input_pixel_format": "rgb24",
                         "codec": "libx264",
@@ -536,8 +540,8 @@ class CameraRecorder():
                     {
                         "key": "depth_wrist",
                         "filename": "depth_wrist_raw.mkv",
-                        "width": self.depth_width_wrist,
-                        "height": self.depth_height_wrist,
+                        "width": self.saved_frame_width,
+                        "height": self.saved_frame_height,
                         "fps": self.fps_wrist,
                         "input_pixel_format": "gray16le",
                         "codec": "ffv1",
@@ -551,8 +555,8 @@ class CameraRecorder():
                     {
                         "key": "rgb_external",
                         "filename": "rgb_external.mp4",
-                        "width": self.width_ext,
-                        "height": self.height_ext,
+                        "width": self.saved_frame_width,
+                        "height": self.saved_frame_height,
                         "fps": self.fps_ext,
                         "input_pixel_format": "rgb24",
                         "codec": "libx264",
@@ -562,8 +566,8 @@ class CameraRecorder():
                     {
                         "key": "depth_external",
                         "filename": "depth_external_raw.mkv",
-                        "width": self.depth_width_ext,
-                        "height": self.depth_height_ext,
+                        "width": self.saved_frame_width,
+                        "height": self.saved_frame_height,
                         "fps": self.fps_ext,
                         "input_pixel_format": "gray16le",
                         "codec": "ffv1",
@@ -613,6 +617,24 @@ class CameraRecorder():
         if errors:
             raise RuntimeError("; ".join(errors))
 
+    @staticmethod
+    def _resize_frame_for_writer(frame: np.ndarray, writer: FFmpegVideoWriter) -> np.ndarray:
+        expected_shape = (
+            (writer.height, writer.width, 3)
+            if writer.input_pixel_format == "rgb24"
+            else (writer.height, writer.width)
+        )
+        if frame.shape == expected_shape:
+            return frame
+        interpolation = cv2.INTER_NEAREST if writer.input_pixel_format == "gray16le" else cv2.INTER_AREA
+        resized = cv2.resize(frame, (writer.width, writer.height), interpolation=interpolation)
+        return resized.astype(frame.dtype, copy=False)
+
+    def _write_frame_to_writer(self, key: str, frame: np.ndarray) -> None:
+        writer = self._episode_video_writers.get(key)
+        if writer is not None:
+            writer.write(self._resize_frame_for_writer(frame, writer))
+
     def _write_episode_video_frames(
         self,
         color_hand_image,
@@ -623,26 +645,14 @@ class CameraRecorder():
         depth_ext_image,
     ) -> None:
         if color_hand_image is not None and depth_hand_image is not None:
-            writer = self._episode_video_writers.get("rgb_hand")
-            if writer is not None:
-                writer.write(color_hand_image)
-            writer = self._episode_video_writers.get("depth_hand")
-            if writer is not None:
-                writer.write(depth_hand_image)
+            self._write_frame_to_writer("rgb_hand", color_hand_image)
+            self._write_frame_to_writer("depth_hand", depth_hand_image)
         if color_wrist_image is not None and depth_wrist_image is not None:
-            writer = self._episode_video_writers.get("rgb_wrist")
-            if writer is not None:
-                writer.write(color_wrist_image)
-            writer = self._episode_video_writers.get("depth_wrist")
-            if writer is not None:
-                writer.write(depth_wrist_image)
+            self._write_frame_to_writer("rgb_wrist", color_wrist_image)
+            self._write_frame_to_writer("depth_wrist", depth_wrist_image)
         if color_ext_image is not None and depth_ext_image is not None:
-            writer = self._episode_video_writers.get("rgb_external")
-            if writer is not None:
-                writer.write(color_ext_image)
-            writer = self._episode_video_writers.get("depth_external")
-            if writer is not None:
-                writer.write(depth_ext_image)
+            self._write_frame_to_writer("rgb_external", color_ext_image)
+            self._write_frame_to_writer("depth_external", depth_ext_image)
 
     def initialize_robot(self):
         """Initialize robot state receiver and optional gripper state reader."""
@@ -2391,7 +2401,7 @@ class CameraRecorder():
                 path="rgb_hand.mp4",
                 storage="mp4",
                 codec="h264",
-                shape=(len(timestamps_hand), self.height_hand, self.width_hand, 3),
+                shape=(len(timestamps_hand), self.saved_frame_height, self.saved_frame_width, 3),
                 dtype="uint8",
                 fps=self.fps_hand,
                 channel_order="rgb",
@@ -2400,7 +2410,7 @@ class CameraRecorder():
                 path="depth_hand_raw.mkv",
                 storage="mkv",
                 codec="ffv1",
-                shape=(len(timestamps_hand), self.depth_height_hand, self.depth_width_hand),
+                shape=(len(timestamps_hand), self.saved_frame_height, self.saved_frame_width),
                 dtype="uint16",
                 fps=self.fps_hand,
                 verified_lossless=True,
@@ -2410,7 +2420,7 @@ class CameraRecorder():
                 path="rgb_wrist.mp4",
                 storage="mp4",
                 codec="h264",
-                shape=(len(timestamps_wrist), self.height_wrist, self.width_wrist, 3),
+                shape=(len(timestamps_wrist), self.saved_frame_height, self.saved_frame_width, 3),
                 dtype="uint8",
                 fps=self.fps_wrist,
                 channel_order="rgb",
@@ -2419,7 +2429,7 @@ class CameraRecorder():
                 path="depth_wrist_raw.mkv",
                 storage="mkv",
                 codec="ffv1",
-                shape=(len(timestamps_wrist), self.depth_height_wrist, self.depth_width_wrist),
+                shape=(len(timestamps_wrist), self.saved_frame_height, self.saved_frame_width),
                 dtype="uint16",
                 fps=self.fps_wrist,
                 verified_lossless=True,
@@ -2429,7 +2439,7 @@ class CameraRecorder():
                 path="rgb_external.mp4",
                 storage="mp4",
                 codec="h264",
-                shape=(len(timestamps_ext), self.height_ext, self.width_ext, 3),
+                shape=(len(timestamps_ext), self.saved_frame_height, self.saved_frame_width, 3),
                 dtype="uint8",
                 fps=self.fps_ext,
                 channel_order="rgb",
@@ -2438,7 +2448,7 @@ class CameraRecorder():
                 path="depth_external_raw.mkv",
                 storage="mkv",
                 codec="ffv1",
-                shape=(len(timestamps_ext), self.depth_height_ext, self.depth_width_ext),
+                shape=(len(timestamps_ext), self.saved_frame_height, self.saved_frame_width),
                 dtype="uint16",
                 fps=self.fps_ext,
                 verified_lossless=True,
