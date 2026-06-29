@@ -91,6 +91,19 @@ def axis_map(raw: str | None, default: str) -> np.ndarray:
         return axis_map(None, default)
 
 
+def axis_vector(raw: str | None, default: str) -> np.ndarray:
+    try:
+        sign, axis = parse_axis_expr(raw or default)
+        axis_index = {"x": 0, "y": 1, "z": 2}[axis]
+    except (KeyError, ValueError):
+        if raw is not None:
+            print(f"[xArm] ignoring invalid XARM_TOOL_TWIST_AXIS={raw!r}; using {default!r}", flush=True)
+        return axis_vector(None, default)
+    vector = np.zeros(3, dtype=np.float64)
+    vector[axis_index] = sign
+    return vector
+
+
 def wrap_degrees(values: np.ndarray) -> np.ndarray:
     return (values + 180.0) % 360.0 - 180.0
 
@@ -119,9 +132,12 @@ class QueueXArmTeleop:
         self.spacemouse_timeout_s = max(0.0, env_float("SPACEMOUSE_CONTROL_TIMEOUT_S", 0.30))
         self.axis_mask = axis_mask(os.getenv("XARM_TRANSLATION_AXIS_MASK", "1,1,1"))
         self.rotation_axis_mask = axis_mask(os.getenv("XARM_ROTATION_AXIS_MASK", "1,1,1"))
-        self.command_translation_map_spec = os.getenv("XARM_COMMAND_TRANSLATION_MAP", "y,x,z").strip()
-        self.command_translation_map = axis_map(self.command_translation_map_spec, "y,x,z")
+        self.command_translation_map_spec = os.getenv("XARM_COMMAND_TRANSLATION_MAP", "y,-x,z").strip()
+        self.command_translation_map = axis_map(self.command_translation_map_spec, "y,-x,z")
         self.state_translation_map = np.linalg.inv(self.command_translation_map)
+        self.use_tool_twist_aa = env_bool("XARM_USE_TOOL_TWIST_AA", True)
+        self.tool_twist_axis_spec = os.getenv("XARM_TOOL_TWIST_AXIS", "z").strip()
+        self.tool_twist_axis = axis_vector(self.tool_twist_axis_spec, "z")
         self.control_mode = os.getenv("XARM_TELEOP_CONTROL_MODE", "servo").strip().lower()
         if self.control_mode not in {"servo", "position"}:
             self.control_mode = "servo"
@@ -152,6 +168,7 @@ class QueueXArmTeleop:
             f"command_hz={1.0 / self.command_period_s:.1f}"
         )
         print(f"[xArm] command_translation_map={self.command_translation_map_spec}")
+        print(f"[xArm] tool_twist_aa={int(self.use_tool_twist_aa)}, axis={self.tool_twist_axis_spec}")
 
         self.latest_command = {
             "timestamp": None,
@@ -482,6 +499,7 @@ class QueueXArmTeleop:
             "rotation_step_deg": [0.0, 0.0, 0.0],
             "target_pose": [],
             "xarm_target_pose": [],
+            "orientation_command_mode": "",
             "source": source,
         }
 
@@ -542,6 +560,14 @@ class QueueXArmTeleop:
         if rotation_norm > 1e-9:
             rotation_step = np.clip(rotation, -1.0, 1.0) * self.angular_speed_deg_s * self.command_period_s
             rotation_step = np.clip(rotation_step, -self.max_rotation_step_deg, self.max_rotation_step_deg)
+        use_tool_twist_aa = (
+            self.use_tool_twist_aa
+            and self.control_mode == "servo"
+            and hasattr(self.arm, "set_servo_cartesian_aa")
+            and translation_norm <= 1e-9
+            and abs(rotation_step[2]) > 1e-9
+            and abs(rotation_step[2]) >= max(abs(rotation_step[0]), abs(rotation_step[1])) * 1.5
+        )
 
         if self._teleop_target_pose is None:
             pose, code = self.position()
@@ -556,7 +582,25 @@ class QueueXArmTeleop:
         semantic_translation_step = self.semantic_translation(translation_step)
         semantic_target = self.semantic_pose(target)
 
-        if self.control_mode == "servo" and hasattr(self.arm, "set_servo_cartesian"):
+        used_tool_twist_aa = False
+        if use_tool_twist_aa:
+            axis_angle = self.tool_twist_axis * rotation_step[2]
+            code = self.arm.set_servo_cartesian_aa(
+                [0.0, 0.0, 0.0, *axis_angle.tolist()],
+                speed=self.angular_speed_deg_s,
+                mvacc=self.move_acc_mm_s2,
+                is_radian=False,
+                is_tool_coord=True,
+                relative=True,
+                wait=False,
+            )
+            command_name = "set_servo_cartesian_aa(tool_twist)"
+            used_tool_twist_aa = code == 0
+        else:
+            code = -1
+            command_name = ""
+
+        if not used_tool_twist_aa and self.control_mode == "servo" and hasattr(self.arm, "set_servo_cartesian"):
             code = self.arm.set_servo_cartesian(
                 target.tolist(),
                 speed=self.speed_mm_s,
@@ -564,7 +608,7 @@ class QueueXArmTeleop:
                 is_radian=False,
             )
             command_name = "set_servo_cartesian"
-        else:
+        elif not used_tool_twist_aa:
             code = self.arm.set_position(
                 *target.tolist(),
                 speed=self.speed_mm_s,
@@ -583,7 +627,7 @@ class QueueXArmTeleop:
             return
 
         self._spacemouse_motion_active = True
-        self._teleop_target_pose = target.copy()
+        self._teleop_target_pose = None if used_tool_twist_aa else target.copy()
         self._last_motion_direction = motion_direction
         self.latest_command = {
             "timestamp": time.time(),
@@ -592,6 +636,7 @@ class QueueXArmTeleop:
             "rotation_step_deg": [round(float(value), 6) for value in rotation_step.tolist()],
             "target_pose": [round(float(value), 6) for value in semantic_target.tolist()],
             "xarm_target_pose": [round(float(value), 6) for value in target.tolist()],
+            "orientation_command_mode": "tool_axis_angle" if used_tool_twist_aa else "rpy_target",
             "source": "spacemouse_queue",
         }
 

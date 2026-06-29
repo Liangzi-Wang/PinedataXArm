@@ -113,7 +113,7 @@ def _axis_map(raw: str | None, default: str) -> np.ndarray:
         return _axis_map(None, default)
 
 
-_COMMAND_TRANSLATION_MAP = _axis_map(os.getenv("XARM_COMMAND_TRANSLATION_MAP", "y,x,z"), "y,x,z")
+_COMMAND_TRANSLATION_MAP = _axis_map(os.getenv("XARM_COMMAND_TRANSLATION_MAP", "y,-x,z"), "y,-x,z")
 _STATE_TRANSLATION_MAP = np.linalg.inv(_COMMAND_TRANSLATION_MAP)
 
 
