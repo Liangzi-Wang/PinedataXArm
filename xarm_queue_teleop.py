@@ -132,12 +132,12 @@ class QueueXArmTeleop:
         self.spacemouse_timeout_s = max(0.0, env_float("SPACEMOUSE_CONTROL_TIMEOUT_S", 0.30))
         self.axis_mask = axis_mask(os.getenv("XARM_TRANSLATION_AXIS_MASK", "1,1,1"))
         self.rotation_axis_mask = axis_mask(os.getenv("XARM_ROTATION_AXIS_MASK", "1,1,1"))
-        self.command_translation_map_spec = os.getenv("XARM_COMMAND_TRANSLATION_MAP", "y,-x,z").strip()
-        self.command_translation_map = axis_map(self.command_translation_map_spec, "y,-x,z")
+        self.command_translation_map_spec = os.getenv("XARM_COMMAND_TRANSLATION_MAP", "-y,x,z").strip()
+        self.command_translation_map = axis_map(self.command_translation_map_spec, "-y,x,z")
         self.state_translation_map = np.linalg.inv(self.command_translation_map)
         self.use_tool_twist_aa = env_bool("XARM_USE_TOOL_TWIST_AA", True)
-        self.tool_twist_axis_spec = os.getenv("XARM_TOOL_TWIST_AXIS", "z").strip()
-        self.tool_twist_axis = axis_vector(self.tool_twist_axis_spec, "z")
+        self.tool_twist_axis_spec = os.getenv("XARM_TOOL_TWIST_AXIS", "-z").strip()
+        self.tool_twist_axis = axis_vector(self.tool_twist_axis_spec, "-z")
         self.control_mode = os.getenv("XARM_TELEOP_CONTROL_MODE", "servo").strip().lower()
         if self.control_mode not in {"servo", "position"}:
             self.control_mode = "servo"
