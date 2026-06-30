@@ -368,6 +368,27 @@ class XArmControlInterface:
 class XArmReceiveInterface:
     def __init__(self, host: str, *_, **__) -> None:
         self.client = _client_for(host)
+        self._ft_sensor_enabled = False
+        self._ft_sensor_warning_printed = False
+        self._enable_ft_sensor_sampling()
+
+    def _warn_ft_sensor_unavailable(self, reason: Exception | str) -> None:
+        if self._ft_sensor_warning_printed:
+            return
+        print(f"[xArm bridge] TCP wrench unavailable: {reason}")
+        self._ft_sensor_warning_printed = True
+
+    def _enable_ft_sensor_sampling(self) -> None:
+        if not hasattr(self.client.arm, "set_ft_sensor_enable"):
+            self._warn_ft_sensor_unavailable("SDK does not expose set_ft_sensor_enable")
+            return
+        with self.client.lock:
+            try:
+                _require_code_ok(self.client.arm.set_ft_sensor_enable(1), "set_ft_sensor_enable")
+            except Exception as exc:
+                self._warn_ft_sensor_unavailable(exc)
+                return
+        self._ft_sensor_enabled = True
 
     def getRobotMode(self):
         with self.client.lock:
@@ -409,10 +430,13 @@ class XArmReceiveInterface:
         return [*semantic_xyz_m, *semantic_rotvec]
 
     def getActualTCPForce(self):
+        if not self._ft_sensor_enabled:
+            return [float("nan")] * 6
         with self.client.lock:
             try:
                 values = _result_value(self.client.arm.get_ft_sensor_data(), "get_ft_sensor_data")
-            except Exception:
+            except Exception as exc:
+                self._warn_ft_sensor_unavailable(exc)
                 return [float("nan")] * 6
         return _as_float_list(values, 6)
 
