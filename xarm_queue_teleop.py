@@ -459,7 +459,7 @@ class QueueXArmTeleop:
 
     def gripper_status_payload(self) -> dict[str, Any]:
         connected = bool(self.enable_gripper_control)
-        available = self.latest_gripper_normalized_position is not None
+        available = self.latest_gripper_position is not None
         return {
             "requested": bool(self.enable_gripper_control),
             "enabled": connected,
@@ -468,7 +468,8 @@ class QueueXArmTeleop:
             "status": "streaming" if available else "connected" if connected else "disconnected",
             "ip": self.robot_ip,
             "latest_timestamp": time.time(),
-            "latest_position": self.latest_gripper_normalized_position,
+            "latest_position": self.latest_gripper_position,
+            "normalized_position": self.latest_gripper_normalized_position,
             "raw_position": self.latest_gripper_position,
             "open_position": self.gripper_open_pos,
             "close_position": self.gripper_close_pos,

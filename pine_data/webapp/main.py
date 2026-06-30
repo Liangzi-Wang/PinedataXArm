@@ -950,6 +950,45 @@ class TmuxRecordingManager:
         merged["status"] = "streaming" if available else "connected" if connected else "disconnected"
         return merged
 
+    @staticmethod
+    def _merge_robot_sources(primary: dict[str, Any] | None, secondary: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(primary, dict):
+            return secondary if isinstance(secondary, dict) else {}
+        if not isinstance(secondary, dict):
+            return primary
+
+        merged = {**secondary, **primary}
+        primary_latest = primary.get("latest") if isinstance(primary.get("latest"), dict) else {}
+        secondary_latest = secondary.get("latest") if isinstance(secondary.get("latest"), dict) else {}
+        merged["latest"] = {**secondary_latest, **primary_latest}
+
+        for key in ("requested", "enabled", "connected"):
+            merged[key] = bool(primary.get(key) or secondary.get(key))
+        if not primary.get("ip") and secondary.get("ip"):
+            merged["ip"] = secondary["ip"]
+        if not primary.get("fps") and secondary.get("fps"):
+            merged["fps"] = secondary["fps"]
+        return merged
+
+    @staticmethod
+    def _merge_gripper_sources(primary: dict[str, Any] | None, secondary: dict[str, Any] | None) -> dict[str, Any]:
+        if not isinstance(primary, dict):
+            return secondary if isinstance(secondary, dict) else {}
+        if not isinstance(secondary, dict):
+            return primary
+
+        merged = {**secondary, **primary}
+        for key in ("requested", "enabled", "connected"):
+            merged[key] = bool(primary.get(key) or secondary.get(key))
+        for key in ("latest_position", "raw_position", "normalized_position", "latest_timestamp"):
+            if primary.get(key) is None and secondary.get(key) is not None:
+                merged[key] = secondary[key]
+        if not primary.get("ip") and secondary.get("ip"):
+            merged["ip"] = secondary["ip"]
+        if not primary.get("port") and secondary.get("port"):
+            merged["port"] = secondary["port"]
+        return merged
+
     def _spacemouse_payload(
         self,
         tmux_payload: dict[str, Any],
@@ -1560,9 +1599,9 @@ class TmuxRecordingManager:
 
             if teleop_status:
                 if isinstance(teleop_status.get("robot"), dict):
-                    payload["robot"] = teleop_status["robot"]
+                    payload["robot"] = self._merge_robot_sources(payload.get("robot"), teleop_status["robot"])
                 if isinstance(teleop_status.get("gripper"), dict):
-                    payload["gripper"] = teleop_status["gripper"]
+                    payload["gripper"] = self._merge_gripper_sources(payload.get("gripper"), teleop_status["gripper"])
                 if isinstance(teleop_status.get("subtask_reset"), dict):
                     payload["subtask_reset"] = teleop_status["subtask_reset"]
                 teleop_message = str(teleop_status.get("message") or "").strip()
