@@ -385,10 +385,38 @@ class XArmReceiveInterface:
         with self.client.lock:
             try:
                 _require_code_ok(self.client.arm.set_ft_sensor_enable(1), "set_ft_sensor_enable")
+                if hasattr(self.client.arm, "get_ft_sensor_config"):
+                    config = _result_value(self.client.arm.get_ft_sensor_config(), "get_ft_sensor_config")
+                    if len(config) >= 2 and int(config[1]) == 0:
+                        self._warn_ft_sensor_unavailable("set_ft_sensor_enable succeeded but ft_is_started is 0")
+                        return
             except Exception as exc:
                 self._warn_ft_sensor_unavailable(exc)
                 return
         self._ft_sensor_enabled = True
+
+    @staticmethod
+    def _tcp_wrench_values(values) -> list[float] | None:
+        try:
+            wrench = _as_float_list(values, 6)
+        except (TypeError, ValueError):
+            return None
+        return wrench if all(np.isfinite(value) for value in wrench) else None
+
+    @staticmethod
+    def _is_zero_wrench(values: list[float]) -> bool:
+        return all(abs(value) <= 1e-9 for value in values)
+
+    def _report_tcp_wrench(self) -> list[float] | None:
+        if not hasattr(self.client.arm, "ft_ext_force"):
+            return None
+        return self._tcp_wrench_values(getattr(self.client.arm, "ft_ext_force"))
+
+    def _command_tcp_wrench(self) -> list[float] | None:
+        if not hasattr(self.client.arm, "get_ft_sensor_data"):
+            return None
+        values = _result_value(self.client.arm.get_ft_sensor_data(is_raw=False), "get_ft_sensor_data")
+        return self._tcp_wrench_values(values)
 
     def getRobotMode(self):
         with self.client.lock:
@@ -433,12 +461,22 @@ class XArmReceiveInterface:
         if not self._ft_sensor_enabled:
             return [float("nan")] * 6
         with self.client.lock:
+            report_values = self._report_tcp_wrench()
             try:
-                values = _result_value(self.client.arm.get_ft_sensor_data(), "get_ft_sensor_data")
+                command_values = self._command_tcp_wrench()
             except Exception as exc:
                 self._warn_ft_sensor_unavailable(exc)
-                return [float("nan")] * 6
-        return _as_float_list(values, 6)
+                command_values = None
+        if report_values is not None and (
+            command_values is None
+            or (self._is_zero_wrench(command_values) and not self._is_zero_wrench(report_values))
+        ):
+            return report_values
+        if command_values is not None:
+            return command_values
+        if report_values is not None:
+            return report_values
+        return [float("nan")] * 6
 
     def getActualTCPSpeed(self):
         return list(self.client.last_tcp_speed)
