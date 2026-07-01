@@ -114,6 +114,10 @@ class SpaceMouseQueueManager(BaseManager):
 
 SpaceMouseQueueManager.register("get_status_queue")
 
+# Fixed reset from UI.jpg. Use joints for motion; the UI TCP pose is meters +
+# rotvec and must not be passed directly to xArmAPI.set_position().
+XARM_DEFAULT_RESET_JOINTS_RAD = np.asarray([-0.28, -0.17, -0.02, 0.94, 0.05, 1.10], dtype=np.float64)
+
 
 class QueueXArmTeleop:
     def __init__(self, status_file: Path | None = None) -> None:
@@ -151,8 +155,9 @@ class QueueXArmTeleop:
         self.gripper_step = max(1, env_int("XARM_GRIPPER_STEP", 50))
         self.gripper_speed = max(1, env_int("XARM_GRIPPER_SPEED", 500))
         self.gripper_repeat_period_s = max(0.01, env_float("XARM_GRIPPER_REPEAT_PERIOD_S", 0.10))
-        self.reset_speed_mm_s = max(1.0, env_float("XARM_RESET_SPEED", 200.0))
-        self.reset_acc_mm_s2 = max(1.0, env_float("XARM_RESET_ACCELERATION", self.move_acc_mm_s2))
+        self.reset_joint_speed_rad_s = max(0.01, env_float("XARM_RESET_JOINT_SPEED_RAD_S", 0.5))
+        self.reset_joint_acc_rad_s2 = max(0.01, env_float("XARM_RESET_JOINT_ACCEL_RAD_S2", 1.0))
+        self.reset_dry_run = env_bool("XARM_RESET_DRY_RUN", False)
         self.status_file = status_file
         self.status_period_s = 1.0 / max(1.0, env_float("XARM_STATUS_FILE_HZ", 50.0))
         self.stop_on_spacemouse_idle = env_bool("XARM_STOP_ON_SPACEMOUSE_IDLE", True)
@@ -164,7 +169,7 @@ class QueueXArmTeleop:
         self.arm.clean_error()
         self.arm.clean_warn()
         self.configure_motion_mode()
-        self.reset_pose = self.read_configured_reset_pose()
+        self.reset_joints = self.read_configured_reset_joints()
         print(f"[xArm] connected to {self.robot_ip}")
         print(
             f"[xArm] control={self.control_mode}, speed={self.speed_mm_s:.1f} mm/s, "
@@ -206,24 +211,20 @@ class QueueXArmTeleop:
             "active_segment_index": 0,
             "noise_xyz_m": 0.0,
             "last_reset_timestamp": None,
-            "status": "ready" if self.reset_pose is not None else "unavailable",
+            "status": "ready" if self.reset_joints is not None else "unavailable",
         }
 
-    def read_configured_reset_pose(self) -> np.ndarray | None:
-        raw_pose = os.getenv("XARM_RESET_POSE", "").strip()
-        if raw_pose:
+    def read_configured_reset_joints(self) -> np.ndarray | None:
+        raw_joints = os.getenv("XARM_RESET_JOINTS", "").strip()
+        if raw_joints:
             try:
-                values = [float(item.strip()) for item in raw_pose.split(",")]
+                values = [float(item.strip()) for item in raw_joints.split(",")]
             except ValueError:
                 values = []
             if len(values) >= 6:
                 return np.asarray(values[:6], dtype=np.float64)
-            print(f"[xArm] ignoring invalid XARM_RESET_POSE={raw_pose!r}; expected x,y,z,roll,pitch,yaw", flush=True)
-        pose, code = self.position()
-        if pose is None:
-            print(f"[xArm] reset pose unavailable, failed to read current pose, code={code}", flush=True)
-            return None
-        return pose.copy()
+            print(f"[xArm] ignoring invalid XARM_RESET_JOINTS={raw_joints!r}; expected 6 joint angles in radians", flush=True)
+        return XARM_DEFAULT_RESET_JOINTS_RAD.copy()
 
     def command_translation(self, semantic_translation: np.ndarray) -> np.ndarray:
         return self.command_translation_map @ semantic_translation
@@ -307,8 +308,8 @@ class QueueXArmTeleop:
             print(f"[xArm] servo recovery failed: {exc}", flush=True)
 
     def move_to_reset_pose(self, segment_index: int = 0, noise_xyz_m: float = 0.0) -> bool:
-        if self.reset_pose is None:
-            print("[xArm] reset requested, but no reset pose is available", flush=True)
+        if self.reset_joints is None:
+            print("[xArm] reset requested, but no reset joints are available", flush=True)
             self.subtask_reset.update({
                 "active_segment_index": int(segment_index),
                 "noise_xyz_m": float(noise_xyz_m),
@@ -318,7 +319,7 @@ class QueueXArmTeleop:
             self.write_status(force=True)
             return False
 
-        target = self.reset_pose.copy()
+        target = self.reset_joints.copy()
         self.stop_motion("reset")
         self._teleop_target_pose = None
         self._last_motion_direction = np.zeros(6, dtype=np.float64)
@@ -331,18 +332,31 @@ class QueueXArmTeleop:
         self.write_status(force=True)
 
         try:
+            print(
+                f"[xArm] reset target joints(rad)={[round(float(v), 4) for v in target.tolist()]}, "
+                f"speed={self.reset_joint_speed_rad_s:.3f} rad/s, "
+                f"acc={self.reset_joint_acc_rad_s2:.3f} rad/s^2, "
+                f"dry_run={int(self.reset_dry_run)}",
+                flush=True,
+            )
+            if self.reset_dry_run:
+                self.subtask_reset["status"] = "ready"
+                self.write_status(force=True)
+                return True
             self.arm.motion_enable(enable=True)
             self.arm.set_mode(0)
             self.arm.set_state(0)
             time.sleep(0.1)
-            code = self.arm.set_position(
-                *target.tolist(),
-                speed=self.reset_speed_mm_s,
-                mvacc=self.reset_acc_mm_s2,
+            code = self.arm.set_servo_angle(
+                angle=target.tolist(),
+                speed=self.reset_joint_speed_rad_s,
+                mvacc=self.reset_joint_acc_rad_s2,
+                is_radian=True,
                 wait=True,
+                radius=None,
             )
             if code != 0:
-                print(f"[xArm] reset set_position failed, code={code}; {self.arm_diagnostics()}", flush=True)
+                print(f"[xArm] reset set_servo_angle failed, code={code}; {self.arm_diagnostics()}", flush=True)
                 self.subtask_reset["status"] = "failed"
                 self.write_status(force=True)
                 return False
@@ -354,7 +368,7 @@ class QueueXArmTeleop:
             self.subtask_reset["status"] = "ready"
             self.set_zero_command("reset")
             self.write_status(force=True)
-            print(f"[xArm] reset complete: pose={[round(float(v), 3) for v in target.tolist()]}", flush=True)
+            print(f"[xArm] reset complete: joints(rad)={[round(float(v), 4) for v in target.tolist()]}", flush=True)
             return True
         except Exception as exc:
             self.subtask_reset["status"] = "failed"
