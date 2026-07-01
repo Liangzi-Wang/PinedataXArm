@@ -114,6 +114,9 @@ class SpaceMouseQueueManager(BaseManager):
 
 SpaceMouseQueueManager.register("get_status_queue")
 
+UR_TELEOP_TRANSLATION_SPEED_MM_S = 150.0
+UR_TELEOP_ROTATION_SPEED_DEG_S = float(np.rad2deg(0.60))
+
 # Fixed reset from UI.jpg plus the hidden 7th joint recovered from RAM.zip.
 # Use joints for motion; the UI TCP pose is meters + rotvec and must not be
 # passed directly to xArmAPI.set_position().
@@ -128,8 +131,8 @@ class QueueXArmTeleop:
         if XArmAPI is None:
             raise RuntimeError(f"xarm-python-sdk is not installed: {XARM_IMPORT_ERROR}")
         self.robot_ip = os.getenv("XARM_IP", os.getenv("ROBOT_IP", "192.168.1.206")).strip()
-        self.speed_mm_s = max(1.0, env_float("XARM_TELEOP_SPEED", 300.0))
-        self.angular_speed_deg_s = max(1.0, env_float("XARM_TELEOP_ANGULAR_SPEED", 45.0))
+        self.speed_mm_s = max(1.0, env_float("XARM_TELEOP_SPEED", UR_TELEOP_TRANSLATION_SPEED_MM_S))
+        self.angular_speed_deg_s = max(1.0, env_float("XARM_TELEOP_ANGULAR_SPEED", UR_TELEOP_ROTATION_SPEED_DEG_S))
         self.move_acc_mm_s2 = max(1.0, env_float("XARM_MOVE_ACCELERATION", 2000.0))
         self.command_period_s = max(0.005, env_float("XARM_COMMAND_PERIOD_S", 0.01))
         self.max_step_mm = max(0.1, env_float("XARM_MAX_STEP_MM", self.speed_mm_s * self.command_period_s))
@@ -316,11 +319,16 @@ class QueueXArmTeleop:
             print(f"[xArm] servo recovery failed: {exc}", flush=True)
 
     def move_to_reset_pose(self, segment_index: int = 0, noise_xyz_m: float = 0.0) -> bool:
+        effective_noise_xyz_m = float(noise_xyz_m)
+        if not np.isfinite(effective_noise_xyz_m) or effective_noise_xyz_m < 0.0:
+            effective_noise_xyz_m = 0.0
+        applied_noise_xyz_m = [0.0, 0.0, 0.0]
         if self.reset_joints is None:
             print("[xArm] reset requested, but no reset joints are available", flush=True)
             self.subtask_reset.update({
                 "active_segment_index": int(segment_index),
-                "noise_xyz_m": float(noise_xyz_m),
+                "noise_xyz_m": effective_noise_xyz_m,
+                "applied_noise_xyz_m": applied_noise_xyz_m,
                 "last_reset_timestamp": time.time(),
                 "status": "unavailable",
             })
@@ -333,7 +341,8 @@ class QueueXArmTeleop:
         self._last_motion_direction = np.zeros(6, dtype=np.float64)
         self.subtask_reset.update({
             "active_segment_index": int(segment_index),
-            "noise_xyz_m": float(noise_xyz_m),
+            "noise_xyz_m": effective_noise_xyz_m,
+            "applied_noise_xyz_m": applied_noise_xyz_m,
             "last_reset_timestamp": time.time(),
             "status": "resetting",
         })
@@ -368,6 +377,35 @@ class QueueXArmTeleop:
                 self.subtask_reset["status"] = "failed"
                 self.write_status(force=True)
                 return False
+            if int(segment_index) > 0 and effective_noise_xyz_m > 0.0:
+                pose, pose_code = self.position()
+                if pose is None:
+                    print(f"[xArm] reset TCP noise skipped: failed to read TCP pose, code={pose_code}", flush=True)
+                    self.subtask_reset["status"] = "failed"
+                    self.write_status(force=True)
+                    return False
+                noise_m = np.random.uniform(-effective_noise_xyz_m, effective_noise_xyz_m, size=3)
+                target_pose = pose.copy()
+                # Reset noise is Cartesian-only: never perturb the fixed 7D joint target.
+                target_pose[:3] += noise_m * 1000.0
+                print(
+                    f"[xArm] reset TCP noise(m)={[round(float(v), 6) for v in noise_m.tolist()]}, "
+                    f"target_pose={[round(float(v), 4) for v in target_pose.tolist()]}",
+                    flush=True,
+                )
+                code = self.arm.set_position(
+                    *target_pose.tolist(),
+                    speed=self.speed_mm_s,
+                    mvacc=self.move_acc_mm_s2,
+                    wait=True,
+                )
+                if code != 0:
+                    print(f"[xArm] reset TCP noise set_position failed, code={code}; {self.arm_diagnostics()}", flush=True)
+                    self.subtask_reset["status"] = "failed"
+                    self.write_status(force=True)
+                    return False
+                applied_noise_xyz_m = [round(float(value), 6) for value in noise_m.tolist()]
+                self.subtask_reset["applied_noise_xyz_m"] = applied_noise_xyz_m
             if self.control_mode == "servo":
                 self.configure_motion_mode()
             else:
