@@ -114,7 +114,8 @@ class SpaceMouseQueueManager(BaseManager):
 
 SpaceMouseQueueManager.register("get_status_queue")
 
-UR_TELEOP_TRANSLATION_SPEED_MM_S = 150.0
+# Match the UR teleop speedL SCALE_FACTOR=0.5 m/s used in temp/pine_data.
+UR_TELEOP_TRANSLATION_SPEED_MM_S = 500.0
 UR_TELEOP_ROTATION_SPEED_DEG_S = float(np.rad2deg(0.60))
 
 # Fixed reset from UI.jpg plus the hidden 7th joint recovered from RAM.zip.
