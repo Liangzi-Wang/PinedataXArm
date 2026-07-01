@@ -114,9 +114,13 @@ class SpaceMouseQueueManager(BaseManager):
 
 SpaceMouseQueueManager.register("get_status_queue")
 
-# Fixed reset from UI.jpg. Use joints for motion; the UI TCP pose is meters +
-# rotvec and must not be passed directly to xArmAPI.set_position().
-XARM_DEFAULT_RESET_JOINTS_RAD = np.asarray([-0.28, -0.17, -0.02, 0.94, 0.05, 1.10], dtype=np.float64)
+# Fixed reset from UI.jpg plus the hidden 7th joint recovered from RAM.zip.
+# Use joints for motion; the UI TCP pose is meters + rotvec and must not be
+# passed directly to xArmAPI.set_position().
+XARM_DEFAULT_RESET_JOINTS_RAD = np.asarray(
+    [-0.28, -0.17, -0.02, 0.94, 0.05, 1.10, 2.921741],
+    dtype=np.float64,
+)
 
 
 class QueueXArmTeleop:
@@ -221,9 +225,13 @@ class QueueXArmTeleop:
                 values = [float(item.strip()) for item in raw_joints.split(",")]
             except ValueError:
                 values = []
-            if len(values) >= 6:
-                return np.asarray(values[:6], dtype=np.float64)
-            print(f"[xArm] ignoring invalid XARM_RESET_JOINTS={raw_joints!r}; expected 6 joint angles in radians", flush=True)
+            if len(values) >= len(XARM_DEFAULT_RESET_JOINTS_RAD):
+                return np.asarray(values[: len(XARM_DEFAULT_RESET_JOINTS_RAD)], dtype=np.float64)
+            print(
+                f"[xArm] ignoring invalid XARM_RESET_JOINTS={raw_joints!r}; "
+                f"expected {len(XARM_DEFAULT_RESET_JOINTS_RAD)} joint angles in radians",
+                flush=True,
+            )
         return XARM_DEFAULT_RESET_JOINTS_RAD.copy()
 
     def command_translation(self, semantic_translation: np.ndarray) -> np.ndarray:
