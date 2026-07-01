@@ -1066,7 +1066,8 @@ function formatRobotPreview(robot) {
     return "Robot disconnected.";
   }
   const latest = robot.latest || {};
-  const jointState = formatNumericList(latest.joint_state, 6);
+  const jointStateLimit = Array.isArray(latest.joint_state) ? latest.joint_state.length : 6;
+  const jointState = formatNumericList(latest.joint_state, jointStateLimit);
   const tcpPose = formatNumericList(latest.eef_pose, 6);
   const tcpWrench = formatNumericList(latest.tcp_wrench, 6);
   const lines = [
